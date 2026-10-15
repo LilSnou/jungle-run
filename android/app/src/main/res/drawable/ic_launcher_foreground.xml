@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Иконка: федора Индианы Джонса с плетью — в «пиксельном» духе игры. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- купол федоры -->
+    <path
+        android:fillColor="#7B4A24"
+        android:pathData="M40,28 h28 a5,5 0 0 1 5,5 v16 h-38 v-16 a5,5 0 0 1 5,-5 z" />
+    <!-- лента -->
+    <path
+        android:fillColor="#3B2513"
+        android:pathData="M35,43 h38 v7 h-38 z" />
+    <!-- поля -->
+    <path
+        android:fillColor="#A06A35"
+        android:pathData="M27,50 h54 a5,5 0 0 1 5,5 v3 a5,5 0 0 1 -5,5 h-54 a5,5 0 0 1 -5,-5 v-3 a5,5 0 0 1 5,-5 z" />
+    <!-- плеть -->
+    <path
+        android:strokeColor="#D9B382"
+        android:strokeWidth="3"
+        android:strokeLineCap="round"
+        android:fillColor="#00000000"
+        android:pathData="M68,63 q16,9 10,21 q-5,9 -15,6" />
+    <!-- золотой идол внизу -->
+    <path
+        android:fillColor="#C9A227"
+        android:pathData="M50,74 h8 v8 h-8 z" />
+    <path
+        android:fillColor="#8F6F14"
+        android:pathData="M52,77 h4 v2 h-4 z" />
+</vector>

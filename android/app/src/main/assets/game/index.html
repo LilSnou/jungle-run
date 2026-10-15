@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0b0f14">
+<title>Jungle Run</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #0b0f14; overflow: hidden;
+    touch-action: none; -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #stage {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background: #0b0f14;
+    width: 100%; height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+</style>
+</head>
+<body>
+  <div id="stage"><canvas id="game" width="320" height="180"></canvas></div>
+
+  <!-- 1. Core: константы и утилиты -->
+  <script src="js/core/Config.js"></script>
+  <script src="js/core/EventBus.js"></script>
+  <script src="js/core/AudioManager.js"></script>
+  <script src="js/core/Input.js"></script>
+
+  <!-- 2. Графика: пиксель-арт и шрифт -->
+  <script src="js/gfx/PixelFont.js"></script>
+  <script src="js/gfx/SpriteStore.js"></script>
+
+  <!-- 3. Сущности: абстрактный базовый класс и игрок -->
+  <script src="js/entities/Entity.js"></script>
+  <script src="js/entities/Player.js"></script>
+
+  <!-- 4. Враги (наследование + полиморфизм) -->
+  <script src="js/entities/enemies/Enemy.js"></script>
+  <script src="js/entities/enemies/Snake.js"></script>
+  <script src="js/entities/enemies/Jaguar.js"></script>
+  <script src="js/entities/enemies/Bat.js"></script>
+  <script src="js/entities/enemies/Warrior.js"></script>
+
+  <!-- 5. Препятствия -->
+  <script src="js/entities/obstacles/Obstacle.js"></script>
+  <script src="js/entities/obstacles/Spikes.js"></script>
+  <script src="js/entities/obstacles/LowLog.js"></script>
+  <script src="js/entities/obstacles/Statue.js"></script>
+  <script src="js/entities/obstacles/Pit.js"></script>
+
+  <!-- 6. Предметы и снаряды -->
+  <script src="js/entities/items/Item.js"></script>
+  <script src="js/entities/items/Idol.js"></script>
+  <script src="js/entities/items/Heart.js"></script>
+  <script src="js/entities/projectiles/Spear.js"></script>
+
+  <!-- 7. Мир: биомы, фабрики, генератор уровня -->
+  <script src="js/world/Biome.js"></script>
+  <script src="js/world/Jungle.js"></script>
+  <script src="js/world/Village.js"></script>
+  <script src="js/world/Temple.js"></script>
+  <script src="js/world/Factories.js"></script>
+  <script src="js/world/World.js"></script>
+
+  <!-- 8. Интерфейс -->
+  <script src="js/ui/PauseButton.js"></script>
+  <script src="js/ui/TouchControls.js"></script>
+  <script src="js/ui/HUD.js"></script>
+
+  <!-- 9. Игра -->
+  <script src="js/game/Game.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

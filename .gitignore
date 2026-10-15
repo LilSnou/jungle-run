@@ -1,0 +1,14 @@
+# Android / Gradle
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+*.iml
+.idea/
+
+# Системное
+.DS_Store
+Thumbs.db
+
+# Node (для headless-тестов)
+node_modules/
