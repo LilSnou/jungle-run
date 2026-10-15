@@ -57,7 +57,7 @@ Web Audio API в стиле чиптюнов NES — квадратные вол
 
 ### Веб-версия
 
-1. Открой **[junglerun.pages](https://lilsnou.github.io/jungle-run/)** (GitHub Pages)
+1. Открой **[lilsnou.github.io/jungle-run](https://lilsnou.github.io/jungle-run/)** (GitHub Pages)
    или локально:
 
 ```bash
