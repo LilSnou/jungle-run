@@ -1,0 +1,4456 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#0b0f14">
+<title>Jungle Run</title>
+<style>
+  html, body {
+    margin: 0; padding: 0; width: 100%; height: 100%;
+    background: #0b0f14; overflow: hidden;
+    touch-action: none; -webkit-user-select: none; user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #stage {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  canvas {
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+    background: #0b0f14;
+    width: 100%; height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+</style>
+</head>
+<body>
+  <div id="stage"><canvas id="game" width="320" height="180"></canvas></div>
+
+  <!-- 1. Core: константы и утилиты -->
+  <script>
+/* ==== js/core/Config.js ==== */
+/**
+ * Jungle Run — глобальная конфигурация.
+ * Логическое разрешение канваса: 320x180 (16:9, «восьмибитный» масштаб).
+ */
+const CONFIG = {
+  WIDTH: 320,
+  HEIGHT: 180,
+  GROUND_Y: 150,          // уровень земли (верх травы)
+  SCALE: 2,               // множитель пикселя спрайта (18px герой -> 36px на экране)
+
+  GRAVITY: 1700,          // px/с^2
+  JUMP_VELOCITY: -390,    // скорость прыжка (высота ~45px)
+  DOUBLE_JUMP_FACTOR: 0.9,
+  STOMP_BOUNCE: -300,
+
+  RUN_START: 118,         // начальная скорость, px/с
+  RUN_MAX: 232,           // максимальная скорость
+  RUN_EASE: 1.7,          // степень разгона к концу локации
+  KNOCKBACK_TIME: 0.55,   // замедление после урона
+
+  COYOTE_TIME: 0.09,      // «кайот-тайм» для прыжка с края
+  JUMP_BUFFER: 0.10,      // буфер нажатия перед приземлением
+
+  START_LIVES: 3,
+  INVULN_TIME: 1.6,       // неуязвимость после урона
+
+  TRANSITION_EVERY: 550,  // метров до смены локации
+  IDOL_SCORE: 50,
+  STOMP_SCORE: 100,
+
+  GRAVITY_SCALE: 1.0,
+};
+
+/** Ограничение значения диапазоном. */
+function clamp(v, min, max) { return v < min ? min : (v > max ? max : v); }
+
+/** Пересечение прямоугольников (AABB). */
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.w && a.x + a.w > b.x &&
+         a.y < b.y + b.h && a.y + a.h > b.y;
+}
+
+/** Детерминированный ГПСЧ (mulberry32) — для повторяемых «случайных» фонов. */
+function makeRandom(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s |= 0; s = (s + 0x6D2B79F5) | 0;
+    let t = Math.imul(s ^ (s >>> 15), 1 | s);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+</script>
+  <script>
+/* ==== js/core/EventBus.js ==== */
+/**
+ * EventBus — паттерн «Наблюдатель» (Observer).
+ * Все части игры общаются через события, не зная друг о друге напрямую:
+ * игрок не знает про HUD; HUD подписывается на событие 'score:changed'.
+ *
+ * Инкапсуляция: слушатели скрыты за приватным полем.
+ */
+class EventBus {
+  #listeners = new Map();
+
+  /** Подписка на событие. */
+  on(type, fn) {
+    if (!this.#listeners.has(type)) this.#listeners.set(type, []);
+    this.#listeners.get(type).push(fn);
+    return this;
+  }
+
+  /** Отписка. */
+  off(type, fn) {
+    const list = this.#listeners.get(type);
+    if (list) {
+      const i = list.indexOf(fn);
+      if (i >= 0) list.splice(i, 1);
+    }
+    return this;
+  }
+
+  /** Рассылка события всем подписчикам. */
+  emit(type, payload) {
+    const list = this.#listeners.get(type);
+    if (list) for (const fn of list.slice()) fn(payload);
+  }
+
+  /** Полная очистка (при рестарте). */
+  clear() { this.#listeners.clear(); }
+}
+
+/** Глобальная шина событий игры. */
+const events = new EventBus();
+
+</script>
+  <script>
+/* ==== js/core/AudioManager.js ==== */
+/**
+ * AudioManager — паттерн «Одиночка» (Singleton).
+ *
+ * Вся музыка и звуки синтезируются «на лету» через Web Audio API
+ * (без единого аудиофайла) в стиле чиптюнов 8-битных консолей:
+ *   - квадратная волна  → мелодия и бас (NES-подобный «пульс»)
+ *   - шумовой канал     → ударные
+ *
+ * Инкапсуляция: AudioContext, громкость и планировщик нот скрыты
+ * за приватными полями; наружу — только play()/musicOn()/unlock().
+ */
+class AudioManager {
+  static #instance = null;
+
+  /** @returns {AudioManager} единственный экземпляр. */
+  static get instance() {
+    if (!AudioManager.#instance) AudioManager.#instance = new AudioManager();
+    return AudioManager.#instance;
+  }
+
+  #ctx = null;
+  #master = null;
+  #musicGain = null;
+  #sfxGain = null;
+  #noiseBuffer = null;
+  #timer = null;
+  #step = 0;
+  #nextTime = 0;
+  #song = null;
+  #muted = false;
+
+  constructor() {
+    if (AudioManager.#instance) throw new Error('AudioManager — одиночка, используйте AudioManager.instance');
+  }
+
+  /** Разблокировка аудио (нужен жест пользователя). */
+  unlock() {
+    if (this.#ctx) { if (this.#ctx.state === 'suspended') this.#ctx.resume(); return; }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    this.#ctx = new AC();
+    this.#master = this.#ctx.createGain();
+    this.#master.gain.value = this.#muted ? 0 : 0.9;
+    this.#master.connect(this.#ctx.destination);
+
+    this.#musicGain = this.#ctx.createGain();
+    this.#musicGain.gain.value = 0.42;
+    this.#musicGain.connect(this.#master);
+
+    this.#sfxGain = this.#ctx.createGain();
+    this.#sfxGain.gain.value = 0.75;
+    this.#sfxGain.connect(this.#master);
+
+    // если трек уже выбран — запускаем секвенсор
+    if (this.#song && !this.#timer) {
+      this.#nextTime = this.#ctx.currentTime + 0.06;
+      this.#timer = setInterval(() => this.#schedule(), 25);
+    }
+
+    // Буфер белого шума для ударных и «скольжения».
+    const len = this.#ctx.sampleRate * 0.4;
+    this.#noiseBuffer = this.#ctx.createBuffer(1, len, this.#ctx.sampleRate);
+    const data = this.#noiseBuffer.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+  }
+
+  get muted() { return this.#muted; }
+
+  /** Переключение звука (клавиша M / кнопка динамика). */
+  toggleMute() {
+    this.#muted = !this.#muted;
+    if (this.#master) this.#master.gain.value = this.#muted ? 0 : 0.9;
+    return this.#muted;
+  }
+
+  /** Частота ноты вида «C4», «F#3»; null/пусто — пауза. */
+  static #freq(note) {
+    if (!note || note === '.') return 0;
+    const m = /^([A-G])([#b]?)(-?\d)$/.exec(note);
+    if (!m) return 0;
+    const base = { C: 0, D: 2, E: 4, F: 5, G: 7, A: 9, B: 11 }[m[1]];
+    const acc = m[2] === '#' ? 1 : (m[2] === 'b' ? -1 : 0);
+    const midi = base + acc + (parseInt(m[3], 10) + 1) * 12;
+    return 440 * Math.pow(2, (midi - 69) / 12);
+  }
+
+  /** Осциллятор + огибающая. */
+  #tone({ type = 'square', freq = 440, when = 0, dur = 0.1, vol = 0.5, glideTo = 0, dest = null }) {
+    if (!this.#ctx) return;
+    const t = this.#ctx.currentTime + when;
+    const osc = this.#ctx.createOscillator();
+    const g = this.#ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+    if (glideTo) osc.frequency.exponentialRampToValueAtTime(Math.max(20, glideTo), t + dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(vol, t + 0.008);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(g); g.connect(dest || this.#sfxGain);
+    osc.start(t); osc.stop(t + dur + 0.02);
+  }
+
+  /** Шумовой всплеск (ударные, «скольжение», взрывы). */
+  #noise({ when = 0, dur = 0.1, vol = 0.4, from = 8000, to = 600 }) {
+    if (!this.#ctx || !this.#noiseBuffer) return;
+    const t = this.#ctx.currentTime + when;
+    const src = this.#ctx.createBufferSource();
+    src.buffer = this.#noiseBuffer;
+    const filt = this.#ctx.createBiquadFilter();
+    filt.type = 'bandpass';
+    filt.frequency.setValueAtTime(from, t);
+    filt.frequency.exponentialRampToValueAtTime(Math.max(60, to), t + dur);
+    filt.Q.value = 1.2;
+    const g = this.#ctx.createGain();
+    g.gain.setValueAtTime(vol, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(filt); filt.connect(g); g.connect(this.#sfxGain);
+    src.start(t); src.stop(t + dur + 0.02);
+  }
+
+  /** Воспроизведение эффекта по имени. */
+  play(name) {
+    if (!this.#ctx || this.#muted) return;
+    switch (name) {
+      case 'jump':
+        this.#tone({ freq: 300, glideTo: 640, dur: 0.13, vol: 0.35 });
+        break;
+      case 'doubleJump':
+        this.#tone({ freq: 480, glideTo: 980, dur: 0.12, vol: 0.3 });
+        this.#tone({ type: 'triangle', freq: 960, when: 0.02, dur: 0.08, vol: 0.2 });
+        break;
+      case 'slide':
+        this.#noise({ dur: 0.22, vol: 0.35, from: 5200, to: 700 });
+        break;
+      case 'coin':
+        this.#tone({ freq: AudioManager.#freq('B5'), dur: 0.06, vol: 0.32 });
+        this.#tone({ freq: AudioManager.#freq('E6'), when: 0.06, dur: 0.18, vol: 0.32 });
+        break;
+      case 'heart':
+        this.#tone({ type: 'triangle', freq: AudioManager.#freq('C5'), dur: 0.07, vol: 0.4 });
+        this.#tone({ type: 'triangle', freq: AudioManager.#freq('E5'), when: 0.07, dur: 0.07, vol: 0.4 });
+        this.#tone({ type: 'triangle', freq: AudioManager.#freq('G5'), when: 0.14, dur: 0.16, vol: 0.4 });
+        break;
+      case 'stomp':
+        this.#tone({ freq: 340, glideTo: 90, dur: 0.14, vol: 0.4 });
+        this.#noise({ dur: 0.1, vol: 0.3, from: 2500, to: 300 });
+        break;
+      case 'hurt':
+        this.#tone({ type: 'sawtooth', freq: 420, glideTo: 70, dur: 0.28, vol: 0.4 });
+        this.#noise({ dur: 0.2, vol: 0.3, from: 3000, to: 250 });
+        break;
+      case 'fall':
+        this.#tone({ type: 'sawtooth', freq: 500, glideTo: 50, dur: 0.5, vol: 0.4 });
+        break;
+      case 'gameOver': {
+        const seq = ['G3', 'E3', 'C3', 'G2'];
+        seq.forEach((n, i) => this.#tone({
+          type: 'triangle', freq: AudioManager.#freq(n), when: i * 0.16, dur: 0.22, vol: 0.45,
+        }));
+        break;
+      }
+      case 'start':
+        ['C4', 'E4', 'G4', 'C5'].forEach((n, i) => this.#tone({
+          freq: AudioManager.#freq(n), when: i * 0.08, dur: 0.1, vol: 0.35,
+        }));
+        break;
+      case 'biome':
+        ['E4', 'G4', 'B4', 'E5'].forEach((n, i) => this.#tone({
+          type: 'triangle', freq: AudioManager.#freq(n), when: i * 0.09, dur: 0.14, vol: 0.4,
+        }));
+        break;
+      case 'click':
+        this.#tone({ freq: 720, glideTo: 520, dur: 0.07, vol: 0.25 });
+        break;
+      case 'victory': {
+        // фанфара: восходящее арpeggio и длинная финальная нота
+        const seq = [
+          ['C4', 0, 0.12], ['E4', 0.12, 0.12], ['G4', 0.24, 0.12], ['C5', 0.36, 0.3],
+          ['G4', 0.66, 0.1], ['C5', 0.76, 0.6],
+        ];
+        for (const [n, when, dur] of seq) {
+          this.#tone({ freq: AudioManager.#freq(n), when, dur, vol: 0.4 });
+          this.#tone({ type: 'triangle', freq: AudioManager.#freq(n) / 2, when, dur, vol: 0.28 });
+        }
+        break;
+      }
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Музыка: маленький степ-секвенсор (2 канала + ударные).
+  // ------------------------------------------------------------------
+
+  /**
+   * Смена биома меняет «саундтрек»: свой темп и паттерны для
+   * джунглей, деревни и храма.
+   */
+  playSong(name) {
+    if (this.#song && this.#song.name === name) return;
+    this.#song = AudioTracks[name] || null;
+    this.#step = 0;
+    if (this.#song && this.#ctx && !this.#timer) {
+      this.#nextTime = this.#ctx.currentTime + 0.06;
+      this.#timer = setInterval(() => this.#schedule(), 25);
+    }
+    if (!this.#song) { clearInterval(this.#timer); this.#timer = null; }
+  }
+
+  /** Полная остановка музыки (экран победы). */
+  stopSong() {
+    this.#song = null;
+    clearInterval(this.#timer);
+    this.#timer = null;
+  }
+
+  #schedule() {
+    if (!this.#ctx || !this.#song || this.#muted) return;
+    const stepDur = 60 / this.#song.bpm / 4; // 16-е ноты
+    while (this.#nextTime < this.#ctx.currentTime + 0.14) {
+      const i = this.#step % this.#song.bass.length;
+      const lead = this.#song.lead[i];
+      const bass = this.#song.bass[i];
+      const drum = this.#song.drums[i];
+      const arp = this.#song.arp ? this.#song.arp[i] : null;
+      const when = this.#nextTime - this.#ctx.currentTime;
+
+      if (bass && bass !== '.') {
+        this.#tone({ type: 'triangle', freq: AudioManager.#freq(bass), when, dur: stepDur * 1.8, vol: 0.5, dest: this.#musicGain });
+      }
+      if (lead && lead !== '.') {
+        this.#tone({ type: 'square', freq: AudioManager.#freq(lead), when, dur: stepDur * 0.9, vol: 0.16, dest: this.#musicGain });
+      }
+      if (arp && arp !== '.') {
+        this.#tone({ type: 'square', freq: AudioManager.#freq(arp), when, dur: stepDur * 0.7, vol: 0.07, dest: this.#musicGain });
+      }
+      if (drum === 'k') this.#noise({ when, dur: 0.09, vol: 0.35, from: 400, to: 80 });
+      if (drum === 'h') this.#noise({ when, dur: 0.03, vol: 0.12, from: 9000, to: 6000 });
+      if (drum === 's') this.#noise({ when, dur: 0.14, vol: 0.25, from: 4000, to: 900 });
+      if (drum === 't') this.#noise({ when, dur: 0.11, vol: 0.3, from: 900, to: 150 }); // «том» для деревни
+
+      this.#nextTime += stepDur;
+      this.#step++;
+    }
+  }
+}
+
+/**
+ * Музыкальные треки биомов (16-шаговые петли, NES-стиль).
+ * У каждой локации — свой темп, тональность и ритм:
+ *   jungle  — 132 BPM, C-минор, «мчащийся» рифф;
+ *   village — 112 BPM, F-мажор, племенные том-барабаны;
+ *   temple  — 150 BPM, D-минор, тревожный арпеджио-канал (arp).
+ * '.', — пауза. k — бочка, s — малый барабан, h — хэт, t — том.
+ */
+const AudioTracks = {
+  jungle: {
+    name: 'jungle', bpm: 132,
+    bass:  ['C2', 'C2', '.', 'C2', 'Eb2', '.', 'C2', '.',
+            'Bb1', 'Bb1', '.', 'Bb1', 'G2', '.', 'Ab2', '.'],
+    lead:  ['G4', '.', 'Ab4', 'G4', '.', 'Eb4', '.', 'C4',
+            'Eb4', '.', 'F4', 'G4', '.', 'Bb4', '.', 'G4'],
+    arp:   ['.', '.', 'C4', '.', '.', '.', 'Eb4', '.',
+            '.', '.', 'G4', '.', '.', '.', 'C5', '.'],
+    drums: ['k', 'h', 'h', 'h', 's', 'h', 'k', 'h',
+            'k', 'h', 'h', 'h', 's', 'h', 'h', 's'],
+  },
+  village: {
+    name: 'village', bpm: 112,
+    bass:  ['F2', '.', 'F2', '.', 'F2', '.', 'C2', '.',
+            'Bb1', '.', 'Bb1', '.', 'C2', '.', 'C2', '.'],
+    lead:  ['A4', '.', 'C5', '.', 'A4', 'G4', 'F4', '.',
+            'G4', '.', 'A4', 'C5', '.', 'A4', '.', '.'],
+    arp:   ['.', '.', '.', 'F4', '.', '.', '.', 'A4',
+            '.', '.', '.', 'C5', '.', '.', '.', 'A4'],
+    drums: ['k', '.', 't', 'k', 'h', '.', 'k', '.',
+            'k', '.', 't', 'k', 's', 'h', 'k', '.'],
+  },
+  temple: {
+    name: 'temple', bpm: 150,
+    bass:  ['D2', '.', 'D2', 'D2', '.', 'A2', '.', 'D2',
+            'C2', '.', 'C2', 'C2', '.', 'G2', '.', 'C2'],
+    lead:  ['D5', '.', 'C5', '.', 'A4', '.', 'B4', '.',
+            'C5', '.', 'D5', 'F5', '.', 'E5', '.', 'D5'],
+    arp:   ['D4', 'F4', 'A4', 'F4', 'D4', 'F4', 'A4', 'C5',
+            'C4', 'E4', 'G4', 'E4', 'C4', 'E4', 'G4', 'B4'],
+    drums: ['k', 'h', 'h', 'k', 's', 'h', 'k', 'h',
+            'k', 'h', 'k', 'h', 's', 'h', 'h', 's'],
+  },
+};
+
+</script>
+  <script>
+/* ==== js/core/Input.js ==== */
+/**
+ * Input — единый ввод (клавиатура + тач).
+ *
+ * Скруглённый интерфейс для остальной игры: остальной код не знает
+ * ничего про клавиши или координаты касаний — только игровые действия
+ * «jump», «slide», «pause» и их состояние в текущем кадре.
+ *
+ * Паттерн: «Быстрое решение» (Facade) поверх устройств ввода.
+ */
+class Input {
+  #held = { jump: false, slide: false, pause: false };
+  #pressed = new Set();
+  #released = new Set();
+  #pointers = new Map();      // pointerId -> действие (мультитач)
+  #firstInteraction = false;
+
+  constructor() {
+    window.addEventListener('keydown', (e) => this.#onKey(e, true), { passive: false });
+    window.addEventListener('keyup', (e) => this.#onKey(e, false));
+  }
+
+  #onKey(e, down) {
+    const map = {
+      Space: 'jump', ArrowUp: 'jump', KeyW: 'jump', KeyX: 'jump',
+      ArrowDown: 'slide', KeyS: 'slide',
+      Escape: 'pause', KeyP: 'pause',
+    };
+    const action = map[e.code];
+    if (action) {
+      e.preventDefault();
+      down ? this.press(action) : this.release(action);
+      this.#fire();
+    }
+    if (down && e.code === 'KeyM') events.emit('audio:toggle');
+  }
+
+  /** Первый жест — разблокируем Web Audio. */
+  #fire() {
+    if (!this.#firstInteraction) {
+      this.#firstInteraction = true;
+      AudioManager.instance.unlock();
+      events.emit('input:first');
+    }
+  }
+
+  /** Виртуальное нажатие (из TouchControls или клавиатуры). */
+  press(action) {
+    if (!this.#held[action]) {
+      this.#held[action] = true;
+      this.#pressed.add(action);
+      this.#fire();
+    }
+  }
+
+  /** Виртуальное отпускание. */
+  release(action) {
+    if (this.#held[action]) {
+      this.#held[action] = false;
+      this.#released.add(action);
+    }
+  }
+
+  /** Кнопка удерживается. */
+  isDown(action) { return !!this.#held[action]; }
+
+  /** Кнопка была нажата в этом кадре. */
+  wasPressed(action) { return this.#pressed.has(action); }
+
+  /** Кнопка была отпущена в этом кадре. */
+  wasReleased(action) { return this.#released.has(action); }
+
+  /** Сброс «кадровых» событий — вызывается в конце кадра. */
+  endFrame() {
+    this.#pressed.clear();
+    this.#released.clear();
+  }
+
+  /**
+   * Мультитач: привязать указатель к действию на время касания.
+   * Возвращает функцию, отпускающую действие (для pointerup/cancel).
+   */
+  bindPointer(pointerId, action) {
+    this.press(action);
+    this.#pointers.set(pointerId, action);
+    return () => {
+      if (this.#pointers.get(pointerId) === action) {
+        this.#pointers.delete(pointerId);
+        this.release(action);
+      }
+    };
+  }
+}
+
+</script>
+
+  <!-- 2. Графика: пиксель-арт и шрифт -->
+  <script>
+/* ==== js/gfx/PixelFont.js ==== */
+/**
+ * PixelFont — растровый шрифт 5x7 в духе 8-битных консолей.
+ * Каждый глиф — 7 строк по 5 бит; текст рисуется пиксельными
+ * прямоугольниками, поэтому остаётся чётким при любом масштабе.
+ */
+class PixelFont {
+  static DATA = {
+    'A': ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
+    'B': ['11110', '10001', '10001', '11110', '10001', '10001', '11110'],
+    'C': ['01110', '10001', '10000', '10000', '10000', '10001', '01110'],
+    'D': ['11110', '10001', '10001', '10001', '10001', '10001', '11110'],
+    'E': ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
+    'F': ['11111', '10000', '10000', '11110', '10000', '10000', '10000'],
+    'G': ['01110', '10001', '10000', '10111', '10001', '10001', '01111'],
+    'H': ['10001', '10001', '10001', '11111', '10001', '10001', '10001'],
+    'I': ['01110', '00100', '00100', '00100', '00100', '00100', '01110'],
+    'J': ['00111', '00010', '00010', '00010', '00010', '10010', '01100'],
+    'K': ['10001', '10010', '10100', '11000', '10100', '10010', '10001'],
+    'L': ['10000', '10000', '10000', '10000', '10000', '10000', '11111'],
+    'M': ['10001', '11011', '10101', '10101', '10001', '10001', '10001'],
+    'N': ['10001', '10001', '11001', '10101', '10011', '10001', '10001'],
+    'O': ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
+    'P': ['11110', '10001', '10001', '11110', '10000', '10000', '10000'],
+    'Q': ['01110', '10001', '10001', '10001', '10101', '10010', '01101'],
+    'R': ['11110', '10001', '10001', '11110', '10100', '10010', '10001'],
+    'S': ['01111', '10000', '10000', '01110', '00001', '00001', '11110'],
+    'T': ['11111', '00100', '00100', '00100', '00100', '00100', '00100'],
+    'U': ['10001', '10001', '10001', '10001', '10001', '10001', '01110'],
+    'V': ['10001', '10001', '10001', '10001', '10001', '01010', '00100'],
+    'W': ['10001', '10001', '10001', '10101', '10101', '11011', '10001'],
+    'X': ['10001', '10001', '01010', '00100', '01010', '10001', '10001'],
+    'Y': ['10001', '10001', '01010', '00100', '00100', '00100', '00100'],
+    'Z': ['11111', '00001', '00010', '00100', '01000', '10000', '11111'],
+    '0': ['01110', '10001', '10011', '10101', '11001', '10001', '01110'],
+    '1': ['00100', '01100', '00100', '00100', '00100', '00100', '01110'],
+    '2': ['01110', '10001', '00001', '00010', '00100', '01000', '11111'],
+    '3': ['11111', '00010', '00100', '00010', '00001', '10001', '01110'],
+    '4': ['00010', '00110', '01010', '10010', '11111', '00010', '00010'],
+    '5': ['11111', '10000', '11110', '00001', '00001', '10001', '01110'],
+    '6': ['00110', '01000', '10000', '11110', '10001', '10001', '01110'],
+    '7': ['11111', '00001', '00010', '00100', '01000', '01000', '01000'],
+    '8': ['01110', '10001', '10001', '01110', '10001', '10001', '01110'],
+    '9': ['01110', '10001', '10001', '01111', '00001', '00010', '01100'],
+    ' ': ['.....', '.....', '.....', '.....', '.....', '.....', '.....'],
+    '.': ['.....', '.....', '.....', '.....', '.....', '01100', '01100'],
+    ',': ['.....', '.....', '.....', '.....', '01100', '01100', '01000'],
+    ':': ['.....', '01100', '01100', '.....', '01100', '01100', '.....'],
+    '!': ['00100', '00100', '00100', '00100', '00100', '.....', '00100'],
+    '?': ['01110', '10001', '00001', '00010', '00100', '.....', '00100'],
+    '-': ['.....', '.....', '.....', '11111', '.....', '.....', '.....'],
+    '+': ['.....', '00100', '00100', '11111', '00100', '00100', '.....'],
+    '/': ['00001', '00010', '00010', '00100', '01000', '01000', '10000'],
+    '(': ['00010', '00100', '01000', '01000', '01000', '00100', '00010'],
+    ')': ['01000', '00100', '00010', '00010', '00010', '00100', '01000'],
+    "'": ['00100', '00100', '.....', '.....', '.....', '.....', '.....'],
+    '>': ['10000', '11000', '11100', '11110', '11100', '11000', '10000'],
+    '^': ['00100', '01010', '10001', '.....', '.....', '.....', '.....'],
+    '=': ['.....', '.....', '11111', '.....', '11111', '.....', '.....'],
+    // --- кириллица (для русскоязычного интерфейса) ---
+    'А': ['01110', '10001', '10001', '11111', '10001', '10001', '10001'],
+    'Б': ['11111', '10000', '10000', '11110', '10001', '10001', '11110'],
+    'В': ['11110', '10001', '10001', '11110', '10001', '10001', '11110'],
+    'Г': ['11111', '10000', '10000', '10000', '10000', '10000', '10000'],
+    'Д': ['01110', '00100', '00100', '00100', '00100', '11111', '11011'],
+    'Е': ['11111', '10000', '10000', '11110', '10000', '10000', '11111'],
+    'Ё': ['01010', '00000', '11111', '10000', '11110', '10000', '11111'],
+    'Ж': ['10101', '10101', '10101', '11111', '10101', '10101', '10101'],
+    'З': ['01110', '10001', '00001', '00110', '00001', '10001', '01110'],
+    'И': ['10001', '10011', '10101', '10101', '11001', '10001', '10001'],
+    'Й': ['01010', '10001', '10011', '10101', '10101', '11001', '10001'],
+    'К': ['10001', '10010', '10100', '11000', '10100', '10010', '10001'],
+    'Л': ['00111', '01001', '01001', '01001', '01001', '10001', '10001'],
+    'М': ['10001', '11011', '10101', '10101', '10001', '10001', '10001'],
+    'Н': ['10001', '10001', '10001', '11111', '10001', '10001', '10001'],
+    'О': ['01110', '10001', '10001', '10001', '10001', '10001', '01110'],
+    'П': ['11111', '10001', '10001', '10001', '10001', '10001', '10001'],
+    'Р': ['11110', '10001', '10001', '11110', '10000', '10000', '10000'],
+    'С': ['01110', '10001', '10000', '10000', '10000', '10001', '01110'],
+    'Т': ['11111', '00100', '00100', '00100', '00100', '00100', '00100'],
+    'У': ['10001', '10001', '10001', '01111', '00001', '00010', '01100'],
+    'Ф': ['01110', '10101', '10101', '11111', '10101', '10101', '01110'],
+    'Х': ['10001', '10001', '01010', '00100', '01010', '10001', '10001'],
+    'Ц': ['10001', '10001', '10001', '10001', '10001', '11111', '00001'],
+    'Ч': ['10001', '10001', '10001', '01111', '00001', '00001', '00001'],
+    'Ш': ['10101', '10101', '10101', '10101', '10101', '10101', '11111'],
+    'Щ': ['10101', '10101', '10101', '10101', '10101', '11111', '00001'],
+    'Ъ': ['11000', '10000', '10000', '11100', '10010', '10010', '11100'],
+    'Ы': ['11010', '10010', '10010', '11110', '10010', '10010', '11110'],
+    'Ь': ['11000', '10000', '10000', '11100', '10010', '10010', '11100'],
+    'Э': ['01110', '10001', '00001', '00111', '00001', '10001', '01110'],
+    'Ю': ['10110', '10101', '10101', '11101', '10101', '10101', '10110'],
+    'Я': ['01111', '10001', '10001', '01111', '00101', '01001', '10001'],
+  };
+
+  static GLYPH_W = 5;
+  static GLYPH_H = 7;
+  static TRACKING = 1;
+
+  /** Ширина строки в пикселях спрайта-сетки. */
+  static measure(text, scale = 1) {
+    const n = String(text).length;
+    return n === 0 ? 0 : (n * (PixelFont.GLYPH_W + PixelFont.TRACKING) - PixelFont.TRACKING) * scale;
+  }
+
+  /**
+   * Отрисовка строки.
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {string} text
+   * @param {number} x левый край
+   * @param {number} y верхний край
+   * @param {object} [opts] { scale, color, align: 'left'|'center'|'right', shadow }
+   */
+  static draw(ctx, text, x, y, opts = {}) {
+    const scale = opts.scale || 1;
+    const color = opts.color || '#f7f3e3';
+    const align = opts.align || 'left';
+    const str = String(text);
+    const w = PixelFont.measure(str, scale);
+    let px = align === 'center' ? Math.round(x - w / 2) : (align === 'right' ? Math.round(x - w) : Math.round(x));
+    const py = Math.round(y);
+
+    if (opts.shadow) {
+      PixelFont.draw(ctx, str, px + scale, py + scale, { scale, color: opts.shadow });
+    }
+
+    ctx.fillStyle = color;
+    for (const ch of str) {
+      const glyph = PixelFont.DATA[ch] || PixelFont.DATA[ch.toUpperCase()] || PixelFont.DATA['?'];
+      for (let r = 0; r < PixelFont.GLYPH_H; r++) {
+        const row = glyph[r];
+        let runStart = -1;
+        for (let c = 0; c <= PixelFont.GLYPH_W; c++) {
+          const on = c < PixelFont.GLYPH_W && row[c] === '1';
+          if (on && runStart < 0) runStart = c;
+          if (!on && runStart >= 0) {
+            ctx.fillRect(px + runStart * scale, py + r * scale, (c - runStart) * scale, scale);
+            runStart = -1;
+          }
+        }
+      }
+      px += (PixelFont.GLYPH_W + PixelFont.TRACKING) * scale;
+    }
+  }
+}
+
+</script>
+  <script>
+/* ==== js/gfx/SpriteStore.js ==== */
+/**
+ * SpriteStore — «фабрика спрайтов» (Factory Method).
+ *
+ * Пиксель-арт описан декларативно: строки-карты + палитра.
+ * Из карт строятся офскрин-канвасы (кэшируются) — рисовать их
+ * дёшево, а выглядят они как настоящие 8-битные спрайты.
+ */
+class SpriteStore {
+  static PALETTE = {
+    'K': '#141220', // контур
+    'R': '#7b4a24', // федора (тень)
+    'r': '#a06a35', // федора (свет)
+    'B': '#3b2513', // лента федоры
+    'S': '#f0b98a', // кожа
+    's': '#cf8f63', // кожа (тень)
+    'J': '#8a4b23', // кожаная куртка
+    'j': '#6b3717', // куртка (тень)
+    'W': '#efe3c8', // рубашка
+    'P': '#5c4433', // брюки
+    'p': '#46331f', // брюки (тень)
+    'O': '#241a10', // ботинки
+    'L': '#c9a227', // золото
+    'l': '#8f6f14', // золото (тень)
+    'w': '#d9b382', // плеть
+    'G': '#3fae4a', // зелёный (змея, юбка)
+    'g': '#2b7d35',
+    'Y': '#d9c534', // ягуар
+    'y': '#a8921f',
+    'E': '#b03027', // красный (глаза, перья)
+    'V': '#8d8f9c', // камень
+    'v': '#5c5e6b',
+    'D': '#4a3b6b', // летучая мышь
+    'A': '#c98a5a', // тон кожи воина
+    'a': '#96613a',
+  };
+
+  /** Именованные карты спрайтов. Строки короче 16 дополняются «.» автоматически. */
+  static MAPS = {
+    // --- игрок: 16x18, контент в строках 1..17 (низ рисунка = низ хитбокса) ---
+    player_run_0: [
+      '................',
+      '.....RRRRRR.....',
+      '.....RRRRRR.....',
+      '....BBBBBB......',
+      '...rrrrrrrrrr...',
+      '......SSSS......',
+      '.....BSSSKS.....',
+      '......sSSSs.....',
+      '.......ss.......',
+      '.....EEEEEE.....',
+      '....JJWWLJJj....',
+      '...sJJWWLJJjs...',
+      '....JJWWLJJj....',
+      '....BBBBLBBB....',
+      '.....PPPPPP.....',
+      '....PP...pP.....',
+      '...PP.....pP....',
+      '..OO......OO....',
+    ],
+    player_run_1: [
+      '................',
+      '.....RRRRRR.....',
+      '.....RRRRRR.....',
+      '....BBBBBB......',
+      '...rrrrrrrrrr...',
+      '......SSSS......',
+      '.....BSSSKS.....',
+      '......sSSSs.....',
+      '.......ss.......',
+      '.....EEEEEE.....',
+      '....JJWWLJJj....',
+      '....JJWWLJJjs...',
+      '....JJWWLJJj....',
+      '....BBBBLBBB....',
+      '.....PPPPPP.....',
+      '.....PPPPPP.....',
+      '......pPPp......',
+      '......OOOO......',
+    ],
+    player_run_2: [
+      '................',
+      '.....RRRRRR.....',
+      '.....RRRRRR.....',
+      '....BBBBBB......',
+      '...rrrrrrrrrr...',
+      '......SSSS......',
+      '.....BSSSKS.....',
+      '......sSSSs.....',
+      '.......ss.......',
+      '.....EEEEEE.....',
+      '....JJWWLJJj....',
+      '...sJJWWLJJj....',
+      '....JJWWLJJj....',
+      '....BBBBLBBB....',
+      '.....PPPPPP.....',
+      '.....pP...PP....',
+      '....pP.....PP...',
+      '....OO......OO..',
+    ],
+    player_run_3: [
+      '................',
+      '.....RRRRRR.....',
+      '.....RRRRRR.....',
+      '....BBBBBB......',
+      '...rrrrrrrrrr...',
+      '......SSSS......',
+      '.....BSSSKS.....',
+      '......sSSSs.....',
+      '.......ss.......',
+      '.....EEEEEE.....',
+      '....JJWWLJJj....',
+      '...sJJWWLJJjs...',
+      '....JJWWLJJj....',
+      '....BBBBLBBB....',
+      '.....PPPPPP.....',
+      '....PP..PP......',
+      '...pP....pP.....',
+      '..OO.....OO.....',
+    ],
+    player_jump: [
+      '................',
+      '.....RRRRRR.....',
+      '.....RRRRRR.....',
+      '....BBBBBB......',
+      '...rrrrrrrrrr...',
+      '......SSSS......',
+      '.....BSSSKS.....',
+      '......sSSSs.....',
+      '.......ss.......',
+      '.....EEEEEE.....',
+      '..s.JJWWLJJjs...',
+      '....JJWWLJJj....',
+      '....JJWWLJJj....',
+      '....BBBBLBBB....',
+      '.....PPPPPP.....',
+      '....pP...PP.....',
+      '...pP.....PP....',
+      '..OO......OO....',
+    ],
+    // скольжение: контент в строках 7..17 (низ = низ хитбокса при приседе)
+    player_slide: [
+      '................',
+      '................',
+      '................',
+      '................',
+      '................',
+      '................',
+      '................',
+      '..........RRRR..',
+      '.........BBBBB..',
+      '........rrrrrr..',
+      '..........sSSK..',
+      '.........EEsss..',
+      '...wJJJJWWLLj...',
+      '..w.JJJJWWLLj...',
+      '....PPPPPPPP....',
+      '...pPPPPPPPPp...',
+      '..pPPPPPPPPPP...',
+      '.OOOPPPPPPPPP...',
+    ],
+    player_hurt: [
+      '................',
+      '.....RRRRRR.....',
+      '.....RRRRRR.....',
+      '....BBBBBB......',
+      '...rrrrrrrrrr...',
+      '......SSSS......',
+      '.....BSSSKS.....',
+      '......sSSSs.....',
+      '.......KK.......',
+      '.....EEEEEE.....',
+      '..s.JJWWLJJjs...',
+      '....JJWWLJJj....',
+      '....JJWWLJJj....',
+      '....BBBBLBBB....',
+      '.....PPPPPP.....',
+      '....pP...pP.....',
+      '...pP.....pP....',
+      '..OO.......OO...',
+    ],
+    // --- змея-кобра: 14x14, контент 1..13 (низ = земля) ---
+    snake_0: [
+      '..............',
+      '......GGGG....',
+      '.....GGKGGG.E.',
+      '....gGGGGGG.E.',
+      '...gGGwGGwGGg.',
+      '..gGGGGGGGGGGg',
+      '..gGwGGGGwGGg.',
+      '..gGGGGGGGGGGg',
+      '...gGGwGGwGGg.',
+      '....gGGGGGGg..',
+      '.....gGGGg....',
+      '....GGGGGG....',
+      '...GwGGGGwG...',
+      '..gGGGGGGGGg..',
+    ],
+    snake_1: [
+      '..............',
+      '......GGGG....',
+      '.....GGKGG....',
+      '....gGGGGGG...',
+      '...gGGwGGwGGg.',
+      '..gGGGGGGGGGGg',
+      '..gGwGGGGwGGg.',
+      '..gGGGGGGGGGGg',
+      '...gGGwGGwGGg.',
+      '....gGGGGGGg..',
+      '.....gGGGg....',
+      '....GGGGGG....',
+      '...GwGGGGwG...',
+      '..gGGGGGGGGg..',
+    ],
+    // --- ягуар: 16x14, контент 1..13, хвост слева, морда справа ---
+    jaguar_0: [
+      '................',
+      'Y............KK.',
+      'YY.........KYYYK',
+      'YY.........KYKYK',
+      '.YY........KYYK.',
+      '..YYYYYYYYYYY...',
+      '..YYKKYYYKKYYY..',
+      '..YYYYYYYYYYYY..',
+      '...YYYYKKYYYY...',
+      '...YYYYYYYYYY...',
+      '...YY.YYYY.YY...',
+      '...YY.YYYY.YY...',
+      '...yy.YYYY.yy...',
+      '...OO.OOOO.OO...',
+    ],
+    jaguar_1: [
+      '................',
+      'Y............KK.',
+      'YY.........KYYYK',
+      'YY.........KYKYK',
+      '.YY........KYYK.',
+      '..YYYYYYYYYYY...',
+      '..YYKKYYYKKYYY..',
+      '..YYYYYYYYYYYY..',
+      '...YYYYKKYYYY...',
+      '...YYYYYYYYYY...',
+      '.....YYYYYY.....',
+      '.....YY..YY.....',
+      '.....yy..yy.....',
+      '.....OO..OO.....',
+    ],
+    // --- летучая мышь: 14x8, контент 1..6 ---
+    bat_0: [
+      '..............',
+      '..DD......DD..',
+      '.DDDDDKKDDDDD.',
+      'DDDDDDKKDDDDDD',
+      'DDDDDDDDDDDDDD',
+      '.DDDDDWWDDDDD.',
+      '..DDDD..DDDD..',
+      '..............',
+    ],
+    bat_1: [
+      '..............',
+      '..............',
+      '.DDDDDKKDDDDD.',
+      'DDDDDDKKDDDDDD',
+      'DDDDDDDDDDDDDD',
+      '.DDDDDWWDDDDD.',
+      'DDDD..DD..DDDD',
+      '..............',
+    ],
+    // --- воин: 16x15, контент 0..14 (диадема из перьев до ступней) ---
+    warrior_0: [
+      '...E..E..E..E...',
+      '....EEEEEEEE....',
+      '.....AAAAAA.....',
+      '.....AKAAKA.....',
+      '.....AAAAAA.....',
+      '.....E....E.....',
+      '......aaaa......',
+      '....LLLLLLLL....',
+      '...aAAAAAAAAa...',
+      '....AAALLLAA....',
+      '....AAAAAAAA....',
+      '....GGGGGGGG....',
+      '.....GPPPPG.....',
+      '.....PP..PP.....',
+      '....OO....OO....',
+    ],
+    warrior_1: [
+      '....E..E..E.....',
+      '....EEEEEEEE....',
+      '.....AAAAAA.....',
+      '.....AKAAKA.....',
+      '.....AAAAAA.....',
+      '.....E....E.....',
+      '......aaaa......',
+      '....LLLLLLLL....',
+      '....aAAAAAAa....',
+      '....AAALLLAA....',
+      '....AAAAAAAA....',
+      '....GGGGGGGG....',
+      '.....GPPPPG.....',
+      '......PPPP......',
+      '.....OO..OO.....',
+    ],
+    heart: [
+      '.EE..EE.',
+      'EEEEEEEE',
+      'WEEEEEEE',
+      'WEEEEEEE',
+      '.EEEEEE.',
+      '..EEEE..',
+      '...EE...',
+      '........',
+    ],
+  };
+
+  static #cache = new Map();
+
+  /** Построить канвас из карты. */
+  static #build(rows) {
+    const w = Math.max(...rows.map((r) => r.length));
+    const h = rows.length;
+    const cv = document.createElement('canvas');
+    cv.width = w; cv.height = h;
+    const ctx = cv.getContext('2d');
+    for (let y = 0; y < h; y++) {
+      const row = rows[y];
+      for (let x = 0; x < row.length; x++) {
+        const color = SpriteStore.PALETTE[row[x]];
+        if (color) {
+          ctx.fillStyle = color;
+          ctx.fillRect(x, y, 1, 1);
+        }
+      }
+    }
+    return cv;
+  }
+
+  /** Получить канвас по имени (с кэшированием). */
+  static get(name) {
+    if (!SpriteStore.#cache.has(name)) {
+      const rows = SpriteStore.MAPS[name];
+      if (!rows) throw new Error('Нет спрайта: ' + name);
+      SpriteStore.#cache.set(name, SpriteStore.#build(rows));
+    }
+    return SpriteStore.#cache.get(name);
+  }
+
+  /**
+   * Зеркальная версия (враги смотрят «на себя» — влево).
+   * Паттерн «Декоратор»: оборачивает канвас, не меняя оригинал.
+   */
+  static getFlipped(name) {
+    const key = name + '#flip';
+    if (!SpriteStore.#cache.has(key)) {
+      const src = SpriteStore.get(name);
+      const cv = document.createElement('canvas');
+      cv.width = src.width; cv.height = src.height;
+      const ctx = cv.getContext('2d');
+      ctx.translate(src.width, 0);
+      ctx.scale(-1, 1);
+      ctx.drawImage(src, 0, 0);
+      SpriteStore.#cache.set(key, cv);
+    }
+    return SpriteStore.#cache.get(key);
+  }
+}
+
+</script>
+
+  <!-- 3. Сущности: абстрактный базовый класс и игрок -->
+  <script>
+/* ==== js/entities/Entity.js ==== */
+/**
+ * Entity — абстрактный базовый класс всех игровых объектов.
+ *
+ * ООП-принципы здесь:
+ *  • Абстракция  — update()/draw() объявлены, но не реализованы:
+ *                  каждый потомок сам решает, как он живёт и рисуется.
+ *  • Инкапсуляция — координаты, размер и состояние «мёртвости» скрыты
+ *                  за приватными полями; наружу — только геттеры.
+ *  • Наследование — Player, Enemy, Obstacle, Item наследуют этот класс
+ *                  и переопределяют виртуальные методы (полиморфизм).
+ */
+class Entity {
+  #x;
+  #y;
+  #w;
+  #h;
+  #dead = false;
+  #world = null;
+
+  constructor(x, y, w, h) {
+    this.#x = x;
+    this.#y = y;
+    this.#w = w;
+    this.#h = h;
+  }
+
+  get x() { return this.#x; }
+  set x(v) { this.#x = v; }
+  get y() { return this.#y; }
+  set y(v) { this.#y = v; }
+  get w() { return this.#w; }
+  set w(v) { this.#w = v; }
+  get h() { return this.#h; }
+  set h(v) { this.#h = v; }
+
+  get world() { return this.#world; }
+  set world(v) { this.#world = v; }
+
+  get isDead() { return this.#dead; }
+
+  /** Пометить сущность удалённой. */
+  kill() { this.#dead = true; }
+
+  /** Хитбокс для столкновений. Некоторые объекты переопределяют. */
+  get hitbox() { return { x: this.x, y: this.y, w: this.w, h: this.h }; }
+
+  /** Пересекается ли с другой сущностью. */
+  overlaps(other) { return rectsOverlap(this.hitbox, other.hitbox); }
+
+  /** Обновление состояния (каждый кадр). */
+  update(dt) { /* абстрактно */ }
+
+  /** Отрисовка (каждый кадр). */
+  draw(ctx, cam) { /* абстрактно */ }
+
+  /**
+   * Универсальный рисунок спрайта с масштабом CONFIG.SCALE.
+   * @param {CanvasRenderingContext2D} ctx
+   * @param {{x:number,y:number}} cam   камера
+   * @param {string} name   имя спрайта в SpriteStore
+   * @param {number} ax     смещение спрайта по X (в пикселях спрайта)
+   * @param {number} ay     смещение по Y
+   * @param {boolean} flip  зеркально отразить
+   */
+  drawSprite(ctx, cam, name, ax = 0, ay = 0, flip = false) {
+    const sprite = flip ? SpriteStore.getFlipped(name) : SpriteStore.get(name);
+    const S = CONFIG.SCALE;
+    const dx = Math.round(this.x + ax * S - cam.x);
+    const dy = Math.round(this.y + ay * S - cam.y);
+    ctx.drawImage(sprite, 0, 0, sprite.width, sprite.height, dx, dy, sprite.width * S, sprite.height * S);
+  }
+
+  /** Камера «следит» за игроком вертикально, если он падает в яму. */
+  get isProjectile() { return false; }
+  get damageOnTouch() { return false; }
+  get stompable() { return false; }
+}
+
+</script>
+  <script>
+/* ==== js/entities/Player.js ==== */
+/**
+ * Player — главный герой в духе Индианы Джонса.
+ *
+ * Наследует Entity и переопределяет update()/draw() (полиморфизм).
+ * Инкапсуляция: вся физика (вертикальная скорость, прыжки, скольжение,
+ * здоровье) спрятана за приватными полями.
+ *
+ * Механики паркура:
+ *  • прыжок (с «кайот-таймом» и буфером нажатия — как в хороших платформерах)
+ *  • двойной прыжок
+ *  • скольжение под низкими брёвнами (пока кнопка удерживается)
+ *  • прыжок на голову врага (stomp) с отскоком
+ */
+class Player extends Entity {
+  static STAND_H = 16;
+  static SLIDE_H = 8;
+  static STAND_W = 10;
+  static SLIDE_W = 12;
+
+  #vy = 0;
+  #onGround = true;
+  #jumpsLeft = 1;
+  #coyote = 0;
+  #buffer = 0;
+  #sliding = false;
+  #invuln = 0;
+  #knock = 0;
+  #animTime = 0;
+  #lives;
+  #maxLives;
+  #dustTimer = 0;
+  #dead = false;
+
+  constructor(x, y) {
+    super(x, y, Player.STAND_W, Player.STAND_H);
+    this.#lives = CONFIG.START_LIVES;
+    this.#maxLives = CONFIG.START_LIVES;
+  }
+
+  get vy() { return this.#vy; }
+  get onGround() { return this.#onGround; }
+  get sliding() { return this.#sliding; }
+  get invulnerable() { return this.#invuln > 0; }
+  get lives() { return this.#lives; }
+  get isDown() { return this.#dead; }
+  get invulnTime() { return this.#invuln; }
+
+  /** Сброс всех состояний (рестарт уровня/игры). */
+  reset(x, y) {
+    this.x = x; this.y = y;
+    this.w = Player.STAND_W; this.h = Player.STAND_H;
+    this.#vy = 0; this.#onGround = true; this.#jumpsLeft = 1;
+    this.#coyote = 0; this.#buffer = 0; this.#sliding = false;
+    this.#invuln = 0; this.#knock = 0; this.#dead = false;
+    this.#lives = this.#maxLives;
+  }
+
+  /** Нанести урон (шипы, враги, статуя). */
+  takeDamage(amount = 1) {
+    if (this.#invuln > 0 || this.#dead) return false;
+    this.#lives -= amount;
+    this.#invuln = CONFIG.INVULN_TIME;
+    this.#knock = CONFIG.KNOCKBACK_TIME;
+    this.#vy = -160;
+    events.emit('player:hurt');
+    if (this.#lives <= 0) {
+      this.#lives = 0;
+      this.#dead = true;
+      events.emit('player:dead');
+    }
+    return true;
+  }
+
+  /** Подобрать сердечко. */
+  heal() {
+    if (this.#lives < this.#maxLives) {
+      this.#lives++;
+      return true;
+    }
+    return false;
+  }
+
+  /** Отскок после прыжка на врага. */
+  bounce() {
+    this.#vy = CONFIG.STOMP_BOUNCE;
+    this.#jumpsLeft = 1;
+  }
+
+  /** Возрождение после падения в яму (в мире — рядом с ямой). */
+  respawn(x) {
+    this.x = x;
+    this.y = CONFIG.GROUND_Y - this.h;
+    this.#vy = 0;
+    this.#onGround = true;
+    this.#invuln = Math.max(this.#invuln, CONFIG.INVULN_TIME);
+  }
+
+  #tryJump() {
+    if (this.#onGround || this.#coyote > 0) {
+      this.#vy = CONFIG.JUMP_VELOCITY;
+      this.#onGround = false;
+      this.#coyote = 0;
+      this.#jumpsLeft = 1;
+      this.#stopSlide();
+      events.emit('player:jump');
+      return true;
+    }
+    if (this.#jumpsLeft > 0) {
+      this.#vy = CONFIG.JUMP_VELOCITY * CONFIG.DOUBLE_JUMP_FACTOR;
+      this.#jumpsLeft--;
+      events.emit('player:doubleJump');
+      return true;
+    }
+    return false;
+  }
+
+  #startSlide() {
+    if (this.#sliding) return;
+    this.#sliding = true;
+    this.y += Player.STAND_H - Player.SLIDE_H;
+    this.h = Player.SLIDE_H;
+    this.w = Player.SLIDE_W;
+    events.emit('player:slide');
+  }
+
+  #stopSlide() {
+    if (!this.#sliding) return;
+    this.#sliding = false;
+    this.y -= Player.STAND_H - Player.SLIDE_H;
+    this.h = Player.STAND_H;
+    this.w = Player.STAND_W;
+  }
+
+  update(dt, input) {
+    if (this.#dead) {
+      this.#vy += CONFIG.GRAVITY * dt;
+      this.y += this.#vy * dt;
+      // труп ложится на землю и замирает — камера не летит за ним вниз
+      if (this.y + this.h >= CONFIG.GROUND_Y) {
+        this.y = CONFIG.GROUND_Y - this.h;
+        this.#vy = 0;
+      }
+      return;
+    }
+
+    // --- горизонталь: герой автоматически бежит вправо ---
+    let speed = this.world.speed;
+    if (this.#knock > 0) speed *= 0.55;
+    this.x += speed * dt;
+
+    // --- буфер нажатия и кайот-тайм ---
+    if (input.wasPressed('jump')) this.#buffer = CONFIG.JUMP_BUFFER;
+    if (this.#buffer > 0) {
+      if (this.#tryJump()) this.#buffer = 0;
+    }
+    this.#buffer = Math.max(0, this.#buffer - dt);
+    this.#coyote = Math.max(0, this.#coyote - dt);
+
+    // --- скольжение (кнопка удерживается; вставать под бревном нельзя) ---
+    if (this.#onGround && input.isDown('slide') && !input.wasPressed('jump')) this.#startSlide();
+    else if (this.#sliding && !input.isDown('slide') && !this.world.hasOverhead(this)) this.#stopSlide();
+
+    // --- гравитация ---
+    this.#vy += CONFIG.GRAVITY * dt;
+    this.y += this.#vy * dt;
+
+    const feetX = this.x + this.w * 0.5;
+    const hasGround = this.world.isGroundAt(feetX);
+    if (hasGround && this.y + this.h >= CONFIG.GROUND_Y && this.#vy >= 0) {
+      const wasAir = !this.#onGround;
+      this.y = CONFIG.GROUND_Y - this.h;
+      this.#vy = 0;
+      this.#onGround = true;
+      this.#jumpsLeft = 1;
+      if (wasAir) events.emit('player:land');
+    } else {
+      this.#onGround = false;
+    }
+
+    // --- падение в яму ---
+    if (this.y > CONFIG.GROUND_Y + 90) {
+      events.emit('player:fall');
+      const respawnX = this.world.findSafeGround(this.x);
+      this.respawn(respawnX);
+      this.takeDamage(1);
+    }
+
+    // --- таймеры ---
+    this.#invuln = Math.max(0, this.#invuln - dt);
+    this.#knock = Math.max(0, this.#knock - dt);
+    this.#animTime += dt;
+
+    // --- пыль под ногами и от скольжения ---
+    this.#dustTimer -= dt;
+    if (this.#dustTimer <= 0) {
+      if (this.#sliding) {
+        this.world.spawnParticles(this.x, this.y + this.h, '#d9c9a3', 2, -60);
+        this.#dustTimer = 0.06;
+      } else if (this.#onGround) {
+        this.world.spawnParticles(this.x, this.y + this.h - 1, '#c7b58d', 1, -30);
+        this.#dustTimer = 0.18;
+      } else {
+        this.#dustTimer = 0.2;
+      }
+    }
+  }
+
+  /** Какой кадр анимации показывать. */
+  get frame() {
+    if (this.#invuln > 0 && !this.#dead && this.world.time % 0.2 < 0.1) return null; // мигание
+    if (this.#dead) return 'player_hurt';
+    if (this.#sliding) return 'player_slide';
+    if (!this.#onGround) return 'player_jump';
+    if (this.#invuln > 0.9) return 'player_hurt';
+    return 'player_run_' + (Math.floor(this.#animTime * 12) % 4);
+  }
+
+  draw(ctx, cam) {
+    const frame = this.frame;
+    if (!frame) return;
+    // Спрайт 16x18: якорь таков, что НИЗ рисунка совпадает с низом
+    // хитбокса — герой стоит на земле, а не «тонет» в грунте.
+    const ay = frame === 'player_slide' ? -14 : -10;
+    this.drawSprite(ctx, cam, frame, -6, ay, false);
+  }
+}
+
+</script>
+
+  <!-- 4. Враги (наследование + полиморфизм) -->
+  <script>
+/* ==== js/entities/enemies/Enemy.js ==== */
+/**
+ * Enemy — абстрактный базовый класс врагов.
+ *
+ * Наследует Entity; конкретные враги (змея, ягуар, летучая мышь, воин)
+ * наследуют этот класс и реализуют собственные update()/draw() —
+ * пример полиморфизма: World вызывает их «не зная» кто это.
+ */
+class Enemy extends Entity {
+  #animTime = 0;
+  #stomped = false;
+  #flash = 0;
+
+  constructor(x, y, w, h) {
+    super(x, y, w, h);
+    this.world = null;
+  }
+
+  get damageOnTouch() { return true; }
+  get stompable() { return !this.#stomped; }
+  get animTime() { return this.#animTime; }
+
+  /** Игрок прыгнул на голову: враг побеждён. */
+  onStomp(player) {
+    this.#stomped = true;
+    this.#flash = 0.12;
+    this.world.spawnParticles(this.x + this.w / 2, this.y + this.h / 2, '#f2e2b0', 8, -80);
+    events.emit('enemy:stomped', { enemy: this });
+  }
+
+  /** Игрок коснулся сбоку: враг «уходит», игрок получает урон (World решает). */
+  onHit(player) { /* по умолчанию враг выживает */ }
+
+  /** Тик анимации для потомков. */
+  tick(dt) { this.#animTime += dt; }
+
+  /** Кадр по прошедшему времени: переключение раз в `interval` секунд. */
+  frameBy(interval, count, prefix) {
+    return prefix + (Math.floor(this.#animTime / interval) % count);
+  }
+}
+
+</script>
+  <script>
+/* ==== js/entities/enemies/Snake.js ==== */
+/**
+ * Snake — кобра, приподнявшаяся над землёй: теперь её высота сопоставима
+ * с героем (13px против 16px). Побеждается прыжком сверху (stomp);
+ * касание сбоком — урон.
+ */
+class Snake extends Enemy {
+  static SLITHER = 26; // px/с — дополнительное приближение к игроку
+
+  constructor(x) {
+    // хитбокс шире (14px): совпадает с видимым телом кобры —
+    // касание «по картинке» гарантированно даёт урон
+    super(x, CONFIG.GROUND_Y - 13, 14, 13);
+  }
+
+  update(dt) {
+    this.tick(dt);
+    this.x -= Snake.SLITHER * dt;   // приползает навстречу
+    if (this.x < this.world.camera.x - 40) this.kill();
+  }
+
+  draw(ctx, cam) {
+    // якорь: арт 14x14 (28px) центрируется по хитбоксу, низ на земле
+    this.drawSprite(ctx, cam, this.frameBy(0.5, 2, 'snake_'), -3.5, -7.5, true);
+  }
+}
+
+</script>
+  <script>
+/* ==== js/entities/enemies/Jaguar.js ==== */
+/**
+ * Jaguar — крупный ягуар в полный рост (12px — «на уровне» героя):
+ * мирно стоит, затем бросается на героя. Побеждается прыжком на голову.
+ * Демонстрирует «триггерное» поведение.
+ */
+class Jaguar extends Enemy {
+  static TRIGGER_RANGE = 250; // px — замечает героя раньше и бросается раньше
+  static CHARGE_ACCEL = 520;  // px/с^2 — разгон быстрее
+  static CHARGE_MAX = 205;    // px/с — и максимальная скорость выше
+
+  #chargeSpeed = 0;
+  #charging = false;
+
+  constructor(x) {
+    // хитбокс 14px — по ширине видимого тела (с хвостом арт ещё шире)
+    super(x, CONFIG.GROUND_Y - 12, 14, 12);
+  }
+
+  update(dt) {
+    this.tick(dt);
+    const player = this.world.player;
+    const dx = player.x - this.x;
+
+    if (!this.#charging && dx < Jaguar.TRIGGER_RANGE && dx > -30) {
+      this.#charging = true;
+      events.emit('enemy:alert', { enemy: this });
+    }
+
+    if (this.#charging) {
+      this.#chargeSpeed = Math.min(Jaguar.CHARGE_MAX, this.#chargeSpeed + Jaguar.CHARGE_ACCEL * dt);
+      this.x -= this.#chargeSpeed * dt;
+      // пыль под лапами
+      if (Math.floor(this.#chargeSpeed * dt * 10) % 3 === 0) {
+        this.world.spawnParticles(this.x + 4, CONFIG.GROUND_Y - 1, '#c7b58d', 1, -20);
+      }
+    }
+    if (this.x < this.world.camera.x - 40) this.kill();
+  }
+
+  draw(ctx, cam) {
+    const frame = this.#charging ? this.frameBy(0.09, 2, 'jaguar_') : 'jaguar_0';
+    // якорь: арт 16x14 центрируется, низ лап ровно на земле
+    this.drawSprite(ctx, cam, frame, -4.5, -8, true);
+  }
+}
+
+</script>
+  <script>
+/* ==== js/entities/enemies/Bat.js ==== */
+/**
+ * Bat — летучая мышь: летит по синусоиде на высоте головы героя.
+ * НЕ побеждается прыжком сверху (летает) — от неё нужно уворачиваться:
+ * уйди приседом (скольжением) либо отпрыгни вовремя.
+ */
+class Bat extends Enemy {
+  static DRIFT = 42;   // px/с — сносит навстречу герою
+  static AMPLITUDE = 3; // px — лёгкое покачивание (крылья машут кадрами)
+
+  #baseY;
+  #phase;
+  #amp;
+
+  /**
+   * @param {number} x мировая X
+   * @param {number} altitude высота полёта над землёй (19 — на уровне головы;
+   *   нижняя точка мыши (141) не задевает скользящего героя, а верхняя (135)
+   *   гарантированно пересекается с бегущим)
+   */
+  constructor(x, altitude = 19) {
+    const baseY = CONFIG.GROUND_Y - altitude;
+    super(x, baseY, 13, 7);
+    this.#baseY = baseY;
+    this.#phase = Math.random() * Math.PI * 2;
+    this.#amp = Bat.AMPLITUDE;
+  }
+
+  get stompable() { return false; } // сверху её не возьмёшь
+
+  update(dt) {
+    this.tick(dt);
+    this.x -= Bat.DRIFT * dt;
+    this.y = this.#baseY + Math.sin(this.animTime * 5 + this.#phase) * this.#amp;
+    if (this.x < this.world.camera.x - 40) this.kill();
+  }
+
+  draw(ctx, cam) {
+    // якорь: арт 14x8 центрируется по хитбоксу
+    this.drawSprite(ctx, cam, this.frameBy(0.12, 2, 'bat_'), -3.75, -3.5, true);
+  }
+}
+
+</script>
+  <script>
+/* ==== js/entities/enemies/Warrior.js ==== */
+/**
+ * Warrior — воин племени: стоит на месте, замечает героя и метает
+ * копьё на уровне пояса. Копьё нужно перепрыгнуть; самого воина
+ * можно обыграть стомпом.
+ */
+class Warrior extends Enemy {
+  static ALERT_RANGE = 170;
+  static WINDUP = 0.45;   // с — замах
+  static COOLDOWN = 1.7;  // с — пауза между бросками
+  static SPEAR_ALTITUDE = 11;
+
+  #state = 'idle';        // idle | windup | throw
+  #timer = 0;
+
+  constructor(x) {
+    // хитбокс 13px — по видимому телу с диадемой (арт 16x15)
+    super(x, CONFIG.GROUND_Y - 15, 13, 15);
+  }
+
+  update(dt) {
+    this.tick(dt);
+    const player = this.world.player;
+    const dx = player.x - this.x;
+
+    switch (this.#state) {
+      case 'idle':
+        if (this.#timer <= 0 && dx < Warrior.ALERT_RANGE && dx > 40) {
+          this.#state = 'windup';
+          this.#timer = Warrior.WINDUP;
+          events.emit('enemy:alert', { enemy: this });
+        }
+        break;
+      case 'windup':
+        this.#timer -= dt;
+        if (this.#timer <= 0) {
+          this.#state = 'throw';
+          this.#timer = 0.15;
+          this.world.spawnProjectile(new Spear(
+            this.x - 6,
+            CONFIG.GROUND_Y - Warrior.SPEAR_ALTITUDE,
+          ));
+          events.emit('warrior:throw');
+        }
+        break;
+      case 'throw':
+        this.#timer -= dt;
+        if (this.#timer <= 0) {
+          this.#state = 'idle';
+          this.#timer = Warrior.COOLDOWN;
+        }
+        break;
+    }
+
+    if (this.#state === 'idle' && this.#timer > 0) this.#timer -= dt;
+    if (this.x < this.world.camera.x - 40) this.kill();
+  }
+
+  draw(ctx, cam) {
+    const frame = this.#state === 'windup' ? 'warrior_1' : this.frameBy(0.6, 2, 'warrior_');
+    // якорь: арт 16x15 центрируется, ступни ровно на земле
+    this.drawSprite(ctx, cam, frame, -4.75, -7.5, true);
+  }
+}
+
+</script>
+
+  <!-- 5. Препятствия -->
+  <script>
+/* ==== js/entities/obstacles/Obstacle.js ==== */
+/**
+ * Obstacle — абстрактный базовый класс препятствий.
+ * Конкретные препятствия (шипы, бревно, статуя, яма) наследуют его
+ * и переопределяют хитбокс и отрисовку (полиморфизм).
+ */
+class Obstacle extends Entity {
+  constructor(x, y, w, h) { super(x, y, w, h); }
+
+  get damageOnTouch() { return true; }
+  get stompable() { return false; }
+
+  /** Маркер «я препятствие» — удобно для тестов и отладочной отрисовки. */
+  get isObstacle() { return true; }
+
+  /** Препятствие «над головой» (под ним нельзя вставать, пока не проедет). */
+  get isOverhead() { return false; }
+
+  /** Игрок врезался: препятствие может отреагировать (по умолчанию — молчит). */
+  onHit(player) { /* реакция конкретного препятствия */ }
+
+  /** Дымка «опасности» — маленькие частицы для атмосферы. */
+  update(dt) { /* у большинства препятствий нет внутренней логики */ }
+}
+
+</script>
+  <script>
+/* ==== js/entities/obstacles/Spikes.js ==== */
+/**
+ * Spikes — каменные шипы храма на полную «грудь» героя (12px):
+ * их надо перепрыгнуть. Рисуются процедурно (пиксельные треугольники),
+ * хитбокс уже рисунка.
+ */
+class Spikes extends Obstacle {
+  constructor(x, width = 16) {
+    // основание утоплено на 2px в траву — шипы стоят на земле, а не «парят»
+    super(x, CONFIG.GROUND_Y - 10, width, 12);
+  }
+
+  get hitbox() {
+    return { x: this.x + 3, y: this.y + 5, w: this.w - 6, h: this.h - 5 };
+  }
+
+  draw(ctx, cam) {
+    const S = CONFIG.SCALE;
+    const x0 = Math.round(this.x - cam.x);
+    const yb = Math.round(this.y + this.h - cam.y); // линия земли
+    const spikes = Math.floor(this.w / 8);
+
+    // каменная подложка
+    ctx.fillStyle = '#3a3f4a';
+    ctx.fillRect(x0, yb - S, this.w * S, S);
+    ctx.fillStyle = '#565b66';
+    ctx.fillRect(x0, yb - 2 * S, this.w * S, S);
+
+    for (let i = 0; i < spikes; i++) {
+      const cx = x0 + i * 8 * S + 4 * S;
+      for (let k = 0; k < 5; k++) {
+        ctx.fillStyle = k === 0 ? '#e8edf5' : (k === 1 ? '#c2c9d4' : '#9aa3ad');
+        const w = (k + 1) * 2 * S;
+        ctx.fillRect(cx - w / 2, yb - (6 - k) * 2 * S, w, 2 * S);
+      }
+    }
+  }
+}
+
+</script>
+  <script>
+/* ==== js/entities/obstacles/LowLog.js ==== */
+/**
+ * LowLog — низко подвешенное бревно (в джунглях — на vines,
+ * в деревне — на канатах). Его нельзя перепрыгнуть стоя —
+ * нужно скользить под ним.
+ */
+class LowLog extends Obstacle {
+  constructor(x) {
+    super(x, CONFIG.GROUND_Y - 18, 24, 9);
+  }
+
+  /** Пока игрок скользит — мимо. Прыжок врезается в бревно. */
+  get hitbox() {
+    return { x: this.x, y: this.y + 1, w: this.w, h: this.h - 2 };
+  }
+
+  get isOverhead() { return true; }
+
+  draw(ctx, cam) {
+    const S = CONFIG.SCALE;
+    const x = Math.round(this.x - cam.x);
+    const y = Math.round(this.y - cam.y);
+    const w = this.w * S;
+    const h = this.h * S;
+
+    // низ бревна — ровно под низом хитбокса (бревно висит, а не лежит на земле)
+    const bot = y + this.h + 1;
+    const top = bot - h;
+
+    // vines/верёвки — вверх к кроне за пределы экрана
+    ctx.fillStyle = '#3f6b35';
+    ctx.fillRect(x + 2 * S, -2, S, top + 2);
+    ctx.fillRect(x + w - 3 * S, -2, S, top + 2);
+    ctx.fillStyle = '#2f5f2c';
+    ctx.fillRect(x + 2 * S, -2, 1, top + 2);
+    ctx.fillRect(x + w - 3 * S, -2, 1, top + 2);
+
+    // бревно
+    ctx.fillStyle = '#6b4a25';
+    ctx.fillRect(x, top, w, h);
+    ctx.fillStyle = '#54381b';
+    ctx.fillRect(x, top + h - S, w, S);
+    ctx.fillStyle = '#845c30';
+    ctx.fillRect(x, top + S, w, S);
+    // годовые кольца на торце
+    ctx.fillStyle = '#3d2a14';
+    ctx.fillRect(x + S, top + 3 * S, S, S);
+    ctx.fillRect(x + w - 2 * S, top + 3 * S, S, S);
+    ctx.fillRect(x + w - 2 * S, top + 6 * S, S, S);
+    // сук
+    ctx.fillStyle = '#54381b';
+    ctx.fillRect(x + 9 * S, top - S, 2 * S, S);
+  }
+}
+
+</script>
+  <script>
+/* ==== js/entities/obstacles/Vine.js ==== */
+/**
+ * Vine — жгут из лиан, свисающих на пути в джунглях.
+ * Наследует LowLog (тот же хитбокс и контракт «под ним скользят»),
+ * но рисуется по-своему — пример повторного использования через наследование.
+ */
+class Vine extends LowLog {
+  constructor(x) {
+    super(x);
+    this.#leafPhase = Math.random() * Math.PI * 2;
+  }
+
+  #leafPhase;
+
+  draw(ctx, cam) {
+    const S = CONFIG.SCALE;
+    const x = Math.round(this.x - cam.x);
+    const y = Math.round(this.y - cam.y);
+    const w = this.w * S;
+    const h = this.h * S;
+
+    // низ жгута — под низом хитбокса: жгут висит, под ним свободно про скольжение
+    const bot = y + this.h + 1;
+    const bt = bot - (h - 2 * S); // верх жгута
+
+    // свисающие стебли — вверх к кроне за экран
+    ctx.fillStyle = '#2f6b35';
+    for (let i = 0; i < 4; i++) {
+      const vx = x + 2 * S + i * 6 * S;
+      ctx.fillRect(vx, -2, S, bt + 2);
+    }
+
+    // жгут лиан
+    ctx.fillStyle = '#3f7a3a';
+    ctx.fillRect(x, bt, w, h - 2 * S);
+    ctx.fillStyle = '#2f5f2c';
+    ctx.fillRect(x, bot - S, w, S);
+
+    // листья (слегка колышутся)
+    const sway = Math.round(Math.sin(this.world ? this.world.time * 2 + this.#leafPhase : 0) * S);
+    ctx.fillStyle = '#4e9a3f';
+    for (let i = 0; i < 5; i++) {
+      const lx = x + i * 5 * S + sway;
+      ctx.fillRect(lx, bt - S, 3 * S, S + (i % 2) * S);
+      ctx.fillRect(lx + S, bt - 2 * S, S, S);
+    }
+    ctx.fillStyle = '#66b84f';
+    ctx.fillRect(x + 3 * S, bt - S, 2 * S, S);
+    ctx.fillRect(x + w - 6 * S, bt - S, 2 * S, S);
+  }
+}
+
+</script>
+  <script>
+/* ==== js/entities/obstacles/RopeTrap.js ==== */
+/**
+ * RopeTrap — верёвка-ловушка между двумя деревянными столбиками
+ * в деревне аборигенов. Наследует LowLog.
+ */
+class RopeTrap extends LowLog {
+  constructor(x) {
+    super(x);
+  }
+
+  draw(ctx, cam) {
+    const S = CONFIG.SCALE;
+    const x = Math.round(this.x - cam.x);
+    const y = Math.round(this.y - cam.y);
+    const w = this.w * S;
+    const h = this.h * S;
+
+    // столбики
+    ctx.fillStyle = '#6b4a25';
+    ctx.fillRect(x - S, y - 4 * S, 2 * S, h + 4 * S);
+    ctx.fillRect(x + w - S, y - 4 * S, 2 * S, h + 4 * S);
+    ctx.fillStyle = '#845c30';
+    ctx.fillRect(x - S, y - 4 * S, S, h + 4 * S);
+    // резные навершия столбиков
+    ctx.fillStyle = '#c9832e';
+    ctx.fillRect(x - 2 * S, y - 6 * S, 4 * S, 2 * S);
+    ctx.fillRect(x + w - 2 * S, y - 6 * S, 4 * S, 2 * S);
+
+    // провисшая верёвка
+    ctx.fillStyle = '#d9b382';
+    ctx.fillRect(x, y + S, w, S);
+    ctx.fillRect(x + 2 * S, y + 2 * S, w - 4 * S, S);
+    ctx.fillStyle = '#a58a5f';
+    ctx.fillRect(x + 4 * S, y + 3 * S, w - 8 * S, S);
+
+    // лохмотья/флажки на верёвке
+    ctx.fillStyle = '#b03027';
+    ctx.fillRect(x + 5 * S, y + 3 * S, 2 * S, 3 * S);
+    ctx.fillStyle = '#3fae4a';
+    ctx.fillRect(x + w - 8 * S, y + 3 * S, 2 * S, 3 * S);
+  }
+}
+
+</script>
+  <script>
+/* ==== js/entities/obstacles/StoneBeam.js ==== */
+/**
+ * StoneBeam — упавшая каменная балка колонны в храме майя.
+ * Наследует LowLog: проскальзывай или получай урон.
+ */
+class StoneBeam extends LowLog {
+  constructor(x) {
+    super(x);
+  }
+
+  draw(ctx, cam) {
+    const S = CONFIG.SCALE;
+    const x = Math.round(this.x - cam.x);
+    const y = Math.round(this.y - cam.y);
+    const w = this.w * S;
+    const h = this.h * S;
+
+    // низ балки — под низом хитбокса (под ней можно проскользнуть)
+    const bot = y + this.h + 1;
+    const top = bot - (h - S);
+
+    // балка
+    ctx.fillStyle = '#6a6f78';
+    ctx.fillRect(x, top, w, h - S);
+    ctx.fillStyle = '#7d838d';
+    ctx.fillRect(x, top, w, S);
+    ctx.fillStyle = '#4a4e56';
+    ctx.fillRect(x, bot - S, w, S);
+
+    // резные каннелюры
+    ctx.fillStyle = '#565b63';
+    for (let i = 0; i < 4; i++) {
+      ctx.fillRect(x + (3 + i * 5) * S, top + 3 * S, S, 3 * S);
+    }
+    // трещина
+    ctx.fillStyle = '#3a3d44';
+    ctx.fillRect(x + 9 * S, top + 2 * S, S, 3 * S);
+    ctx.fillRect(x + 10 * S, top + 4 * S, 2 * S, S);
+
+    // цепи вверх к потолку храма — балка подвешена, под ней свободно про скольжение
+    ctx.fillStyle = '#565b63';
+    ctx.fillRect(x + 2 * S, -2, S, top + 2);
+    ctx.fillRect(x + w - 3 * S, -2, S, top + 2);
+    ctx.fillStyle = '#8d8f9c';
+    for (let yy = -2; yy < top; yy += 4) {
+      ctx.fillRect(x + 2 * S, yy + 1, S, 2);
+      ctx.fillRect(x + w - 3 * S, yy + 1, S, 2);
+    }
+
+    // мхи и трава на балке
+    ctx.fillStyle = '#3e7a3a';
+    ctx.fillRect(x + 6 * S, bot - 2 * S, 3 * S, S);
+    ctx.fillRect(x + w - 12 * S, bot - 2 * S, 4 * S, S);
+  }
+}
+
+</script>
+  <script>
+/* ==== js/entities/obstacles/Statue.js ==== */
+/**
+ * Statue — высокий каменный идол майя. Перепрыгивается двойным
+ * прыжком (высота 30px — на пределе обычного прыжка), особенно
+ * неприятна в связке с другими препятствиями.
+ */
+class Statue extends Obstacle {
+  constructor(x) {
+    // основание утоплено на 2px в траву — идол стоит на земле
+    super(x, CONFIG.GROUND_Y - 28, 12, 30);
+  }
+
+  get hitbox() {
+    return { x: this.x + 1, y: this.y + 2, w: this.w - 2, h: this.h - 2 };
+  }
+
+  draw(ctx, cam) {
+    const S = CONFIG.SCALE;
+    const x = Math.round(this.x - cam.x);
+    const y = Math.round(this.y - cam.y);
+    const w = this.w * S;
+    const h = this.h * S;
+
+    // тело
+    ctx.fillStyle = '#6a6f78';
+    ctx.fillRect(x, y + 2 * S, w, h - 2 * S);
+    // «шапка»
+    ctx.fillStyle = '#7d838d';
+    ctx.fillRect(x - S, y, w + 2 * S, 3 * S);
+    // лицо
+    ctx.fillStyle = '#4a4e56';
+    ctx.fillRect(x + 2 * S, y + 5 * S, 2 * S, 2 * S);   // глаз
+    ctx.fillRect(x + 6 * S, y + 5 * S, 2 * S, 2 * S);   // глаз
+    ctx.fillRect(x + 3 * S, y + 10 * S, 4 * S, S);      // рот
+    ctx.fillRect(x + 4 * S, y + 7 * S, 2 * S, 2 * S);   // нос
+    // узоры
+    ctx.fillStyle = '#565b63';
+    ctx.fillRect(x + S, y + 14 * S, w - 2 * S, S);
+    ctx.fillRect(x + S, y + 20 * S, w - 2 * S, S);
+    // мох
+    ctx.fillStyle = '#3e7a3a';
+    ctx.fillRect(x + S, y + 3 * S, 2 * S, S);
+    ctx.fillRect(x + w - 4 * S, y + 16 * S, 2 * S, 2 * S);
+    ctx.fillRect(x + 2 * S, y + h - 4 * S, 3 * S, S);
+    // основание
+    ctx.fillStyle = '#565b63';
+    ctx.fillRect(x - S, y + h - 3 * S, w + 2 * S, 3 * S);
+  }
+}
+
+</script>
+  <script>
+/* ==== js/entities/obstacles/Pit.js ==== */
+/**
+ * Pit — провал в земле. Особое препятствие: оно не «бьёт» игрока,
+ * оно убирает землю под ним. Мир спрашивает isGroundAt(x) — если
+ * земли нет, герой падает (Player сам решает, что делать).
+ */
+class Pit extends Obstacle {
+  constructor(x, width = 40) {
+    super(x, CONFIG.GROUND_Y, width, CONFIG.HEIGHT - CONFIG.GROUND_Y + 20);
+  }
+
+  get damageOnTouch() { return false; } // урон — через падение
+  get isPit() { return true; }
+
+  /** Кровать ямы пересекается только если игрок уже упал. */
+  get hitbox() {
+    return { x: this.x + 2, y: this.y + 10, w: this.w - 4, h: this.h - 10 };
+  }
+
+  draw(ctx, cam) {
+    const S = CONFIG.SCALE;
+    const x0 = Math.round(this.x - cam.x);
+    const w = Math.round(this.w * S);
+    const yTop = Math.round(this.y - cam.y);
+
+    // темнота
+    ctx.fillStyle = '#0c0a14';
+    ctx.fillRect(x0, yTop, w, CONFIG.HEIGHT * 2);
+
+    // стены
+    ctx.fillStyle = '#2b2016';
+    ctx.fillRect(x0, yTop, 3 * S, CONFIG.HEIGHT);
+    ctx.fillRect(x0 + w - 3 * S, yTop, 3 * S, CONFIG.HEIGHT);
+    ctx.fillStyle = '#43331f';
+    ctx.fillRect(x0 + 3 * S, yTop, S, CONFIG.HEIGHT);
+    ctx.fillRect(x0 + w - 4 * S, yTop, S, CONFIG.HEIGHT);
+
+    // кости внизу (жуткая деталь)
+    ctx.fillStyle = '#cfc7ae';
+    ctx.fillRect(x0 + 8 * S, yTop + 22 * S, 3 * S, S);
+    ctx.fillRect(x0 + w - 12 * S, yTop + 25 * S, 2 * S, S);
+    ctx.fillRect(x0 + w / 2, yTop + 28 * S, S, S);
+  }
+}
+
+</script>
+
+  <!-- 6. Предметы и снаряды -->
+  <script>
+/* ==== js/entities/items/Item.js ==== */
+/**
+ * Item — абстрактный базовый класс подбираемых предметов
+ * (золотые идолы, сердца). Поколебавшись в воздухе, они ждут героя.
+ */
+class Item extends Entity {
+  #phase = Math.random() * Math.PI * 2;
+  #baseY;
+  #time = 0;
+
+  constructor(x, y, w, h) {
+    super(x, y, w, h);
+    this.#baseY = y;
+  }
+
+  get collectible() { return true; }
+  get baseY() { return this.#baseY; }
+  get time() { return this.#time; }
+  get phase() { return this.#phase; }
+
+  /** Поднять/опустить точку парения (используется генератором уровня). */
+  setBaseY(v) { this.#baseY = v; this.y = v; }
+
+  update(dt) {
+    this.#time += dt;
+    this.y = this.#baseY + Math.sin(this.#time * 3 + this.#phase) * 2;
+  }
+
+  /** Игрок подобрал предмет (каждый предмет решает сам, что делать). */
+  onCollect(player) { /* абстрактно */ }
+}
+
+</script>
+  <script>
+/* ==== js/entities/items/Idol.js ==== */
+/**
+ * Idol — золотая монетка майя: очки и «ветка» атмосферы Индианы Джонса.
+ * Монетка круглая, рисуется процедурно (дугами) и «вращается»,
+ * сжимаясь по горизонтали, как в классических раннерах.
+ */
+class Idol extends Item {
+  constructor(x, y) {
+    super(x, y, 8, 8);
+  }
+
+  onCollect(player) {
+    events.emit('idol:collected', { idol: this });
+  }
+
+  draw(ctx, cam) {
+    const S = CONFIG.SCALE;
+    const t = this.time * 3.2 + this.phase;
+    const squeeze = Math.abs(Math.cos(t));          // «вращение» монетки
+    const r = this.w * S * 0.5;                     // радиус = половина ширины
+    const cx = Math.round(this.x - cam.x) + r;
+    const cy = Math.round(this.y - cam.y) + r;
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(Math.max(0.06, squeeze), 1);
+
+    // тёмный контур
+    ctx.fillStyle = '#8f6f14';
+    ctx.beginPath();
+    ctx.arc(0, 0, r, 0, Math.PI * 2);
+    ctx.fill();
+    // золотое тело
+    ctx.fillStyle = '#e8b825';
+    ctx.beginPath();
+    ctx.arc(0, 0, r - S, 0, Math.PI * 2);
+    ctx.fill();
+    // внутренний кольцевой узор
+    ctx.strokeStyle = '#f5d858';
+    ctx.lineWidth = S;
+    ctx.beginPath();
+    ctx.arc(0, 0, r - 2 * S, 0, Math.PI * 2);
+    ctx.stroke();
+
+    // «лицо» майя в центре: глаза и рот
+    if (squeeze > 0.45) {
+      ctx.fillStyle = '#8f6f14';
+      ctx.fillRect(-S, -S, S, S);
+      ctx.fillRect(S, -S, S, S);
+      ctx.fillRect(-S, S, 2 * S, S);
+    }
+    // блик
+    ctx.fillStyle = '#fff7c8';
+    ctx.fillRect(-r + S, -r + 2 * S, S, 2 * S);
+
+    ctx.restore();
+
+    // искры при «фронтальном» положении
+    if (squeeze > 0.92) {
+      ctx.fillStyle = '#fff4c2';
+      ctx.fillRect(cx + r - S, cy - r, S, S);
+    }
+  }
+}
+
+</script>
+  <script>
+/* ==== js/entities/items/Heart.js ==== */
+/**
+ * Heart — сердечко: возвращает одно сердце жизни (если оно потеряно).
+ */
+class Heart extends Item {
+  constructor(x, y) {
+    super(x, y, 8, 8);
+  }
+
+  onCollect(player) {
+    if (player.heal()) events.emit('heart:collected', { heart: this });
+    else events.emit('idol:collected', { idol: this, silent: true }); // жизнь полна — очки утешением
+  }
+
+  draw(ctx, cam) {
+    const S = CONFIG.SCALE;
+    // лёгкое мерцание
+    ctx.globalAlpha = 0.85 + Math.sin(this.time * 6) * 0.15;
+    this.drawSprite(ctx, cam, 'heart', 0, 0, false);
+    ctx.globalAlpha = 1;
+  }
+}
+
+</script>
+  <script>
+/* ==== js/entities/projectiles/Spear.js ==== */
+/**
+ * Spear — копьё, брошенное воином. Летит горизонтально на уровне пояса:
+ * его нужно перепрыгнуть. Пример снаряда (полиморфный «обычный враг» —
+ * тот же контракт damageOnTouch, но своё поведение).
+ */
+class Spear extends Enemy {
+  static SPEED = 210; // px/с
+
+  constructor(x, y) {
+    super(x, y - 2, 12, 4);
+  }
+
+  get stompable() { return false; }
+
+  update(dt) {
+    this.tick(dt);
+    this.x -= Spear.SPEED * dt;
+    if (this.x < this.world.camera.x - 20) this.kill();
+  }
+
+  draw(ctx, cam) {
+    const S = CONFIG.SCALE;
+    const x = Math.round(this.x - cam.x);
+    const y = Math.round(this.y - cam.y);
+    // древко
+    ctx.fillStyle = '#8a6a3d';
+    ctx.fillRect(x, y + S, this.w * S, S);
+    // остриё слева
+    ctx.fillStyle = '#c8ccd8';
+    ctx.fillRect(x, y + S, S * 2, S);
+    ctx.fillStyle = '#5c5e6b';
+    ctx.fillRect(x + S * 2, y, S, S * 3);
+  }
+}
+
+</script>
+
+  <!-- 7. Мир: биомы, фабрики, генератор уровня -->
+  <script>
+/* ==== js/world/Biome.js ==== */
+/**
+ * Biome — абстрактный базовый класс локаций (джунгли, деревня, храм).
+ *
+ * Каждый биом инкапсулирует:
+ *  • палитру (небо, земля),
+ *  • процедурный параллакс-фон (свои силуэты),
+ *  • таблицу «паттернов» препятствий/врагов для генератора уровней,
+ *  • название и музыкальный трек.
+ *
+ * Абстракция + полиморфизм: World вызывает drawBackground()/getPattern(),
+ * не зная, какая именно локация рисуется.
+ */
+class Biome {
+  constructor(seed = 1) {
+    this.rng = makeRandom(seed);
+    this.time = 0;
+  }
+
+  /** Название локации для HUD. */
+  get name() { return 'BIOME'; }
+  /** Музыкальный трек. */
+  get track() { return 'jungle'; }
+  /** Цвет неба сверху/снизу. */
+  get skyTop() { return '#000'; }
+  get skyBottom() { return '#000'; }
+  /** Палитра земли: трава/камень, грунт, тени. */
+  get groundTop() { return '#000'; }
+  get groundDirt() { return '#000'; }
+  get groundShade() { return '#000'; }
+  get groundLine() { return '#000'; }
+
+  /** Сообщение при входе в биом. */
+  get message() { return this.name; }
+
+  /** Фон (дальний план) — абстрактно. */
+  drawBackground(ctx, cam) { /* абстрактно */ }
+
+  /** Передний план поверх земли/сущностей — по умолчанию пусто. */
+  drawForeground(ctx, cam) { /* опционально */ }
+
+  /** Тик времени для анимаций фона. */
+  tick(dt) { this.time += dt; }
+
+  /**
+   * Паттерн генерации следующего «участка» трассы.
+   * @param {number} difficulty 0..1 — растёт с расстоянием
+   * @returns {{length:number, spawns:Array, items:Array}}
+   */
+  getPattern(difficulty) { /* абстрактно */ return { length: 120, spawns: [], items: [] }; }
+
+  /** Универсальный помощник: выбрать объект из таблицы с весами. */
+  static weightedPick(rng, table) {
+    let total = 0;
+    for (const e of table) total += e.weight;
+    let r = rng() * total;
+    for (const e of table) {
+      r -= e.weight;
+      if (r <= 0) return e.value;
+    }
+    return table[table.length - 1].value;
+  }
+
+  /** Ряд золотых идолов дугой (награда за рискованный прыжок). */
+  static idolArc(x0, count, alt = 42, gap = 12) {
+    const items = [];
+    for (let i = 0; i < count; i++) {
+      const lift = count > 1 ? Math.sin((i / (count - 1)) * Math.PI) * 10 : 0;
+      items.push({ type: 'idol', at: x0 + i * gap, alt: alt + lift });
+    }
+    return items;
+  }
+
+  /**
+   * Параллакс-слой с бесшовным повтором: baseItems описаны внутри
+   * периода `period`, а drawFn рисует каждый элемент на экране.
+   */
+  static parallax(ctx, cam, factor, period, baseItems, drawFn) {
+    const off = (cam.x * factor) % period;
+    for (const it of baseItems) {
+      let x = it.x - off;
+      if (x < 0) x += period;
+      for (let rep = -1; rep <= 1; rep++) {
+        const sx = x + rep * period;
+        if (sx > -140 && sx < CONFIG.WIDTH + 140) drawFn(ctx, Math.round(sx), it);
+      }
+    }
+  }
+}
+
+</script>
+  <script>
+/* ==== js/world/Jungle.js ==== */
+/**
+ * Jungle — джунгли: стартовая локация.
+ * Многослойный параллакс: два диапазона гор с туманом, водопады,
+ * три вида деревьев, кусты у земли, крона с лианами, лучи света,
+ * птицы и светлячки.
+ */
+class Jungle extends Biome {
+  constructor(seed) {
+    super(seed);
+    const rng = this.rng;
+
+    this.clouds = [];
+    for (let i = 0; i < 6; i++) {
+      this.clouds.push({ x: i * 54 + rng() * 26, y: 12 + rng() * 24, w: 30 + rng() * 30, h: 6 + rng() * 4 });
+    }
+
+    this.farMountains = [];
+    for (let i = 0; i < 7; i++) {
+      this.farMountains.push({ x: i * 50 + rng() * 16, w: 44 + rng() * 30, h: 34 + rng() * 26, fall: rng() > 0.6 });
+    }
+
+    this.nearMountains = [];
+    for (let i = 0; i < 6; i++) {
+      this.nearMountains.push({ x: i * 56 + rng() * 20, w: 50 + rng() * 26, h: 22 + rng() * 18 });
+    }
+
+    this.trees = [];
+    for (let i = 0; i < 9; i++) {
+      this.trees.push({
+        x: i * 36 + rng() * 14,
+        kind: Math.floor(rng() * 3),               // 0 — широкая крона, 1 — пальма, 2 — сухое дерево
+        h: 26 + rng() * 18,
+        w: 16 + rng() * 12,
+      });
+    }
+
+    this.bushes = [];
+    for (let i = 0; i < 10; i++) {
+      this.bushes.push({ x: i * 32 + rng() * 12, w: 10 + rng() * 12, h: 6 + rng() * 5 });
+    }
+
+    this.canopy = [];
+    for (let i = 0; i < 12; i++) {
+      this.canopy.push({ x: i * 27 + rng() * 9, r: 9 + rng() * 9, vines: rng() > 0.45 ? 2 + Math.floor(rng() * 3) : 0 });
+    }
+
+    this.birds = [];
+    for (let i = 0; i < 3; i++) {
+      this.birds.push({ x: i * 110 + rng() * 40, y: 24 + rng() * 30, speed: 14 + rng() * 10, phase: rng() * 6 });
+    }
+
+    // бабочки над травой (передний план)
+    this.flutters = [];
+    for (let i = 0; i < 3; i++) {
+      this.flutters.push({
+        x: i * 97 + rng() * 60,
+        y: 78 + rng() * 52,
+        phase: rng() * 6,
+        color: rng() > 0.5 ? '#ffd45e' : '#f2f0dc',
+      });
+    }
+
+    // папоротники, грибы и цветы вдоль земли (нарисованы поверх героя — глубина)
+    this.ferns = [];
+    for (let i = 0; i < 14; i++) {
+      this.ferns.push({ x: i * 25 + rng() * 10, kind: Math.floor(rng() * 3) });
+    }
+  }
+
+  get name() { return 'ДЖУНГЛИ'; }
+  get track() { return 'jungle'; }
+  get skyTop() { return '#3f9fd8'; }
+  get skyBottom() { return '#a9dba4'; }
+  get groundTop() { return '#4e9a3f'; }
+  get groundDirt() { return '#6b4a25'; }
+  get groundShade() { return '#54381b'; }
+  get groundLine() { return '#2f6b28'; }
+
+  drawBackground(ctx, cam) {
+    const W = CONFIG.WIDTH, H = CONFIG.HEIGHT, GY = CONFIG.GROUND_Y;
+    const t = this.time;
+
+    // --- небо с градиентом ---
+    const g = ctx.createLinearGradient(0, 0, 0, GY);
+    g.addColorStop(0, this.skyTop);
+    g.addColorStop(0.65, '#7fc4b8');
+    g.addColorStop(1, this.skyBottom);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+
+    // --- солнце с ореолом ---
+    const sunX = 250 - ((cam.x * 0.04) % 640);
+    ctx.fillStyle = 'rgba(255,240,170,0.25)';
+    ctx.fillRect(sunX - 22, 12, 44, 44);
+    ctx.fillStyle = 'rgba(255,240,170,0.45)';
+    ctx.fillRect(sunX - 17, 17, 34, 34);
+    ctx.fillStyle = '#ffe98a';
+    ctx.fillRect(sunX - 13, 21, 26, 26);
+    ctx.fillStyle = '#fff6c2';
+    ctx.fillRect(sunX - 8, 26, 16, 16);
+
+    // --- облака (двухслойные) ---
+    Biome.parallax(ctx, cam, 0.06, 324, this.clouds, (ctx2, x, c) => {
+      ctx2.fillStyle = '#eef7ef';
+      ctx2.fillRect(x, c.y, c.w, c.h);
+      ctx2.fillRect(x + 6, c.y - 4, c.w - 16, 5);
+      ctx2.fillStyle = '#d4e8d8';
+      ctx2.fillRect(x + 2, c.y + c.h, c.w - 6, 2);
+    });
+
+    // --- дальние горы с водопадами ---
+    Biome.parallax(ctx, cam, 0.13, 350, this.farMountains, (ctx2, x, m) => {
+      const base = GY + 4; // низ гор уходит под землю — не «парят»
+      for (let k = 0; k < m.h; k++) {
+        const w = Math.round(m.w * (1 - 0.85 * (k / m.h)));
+        ctx2.fillStyle = k > m.h * 0.6 ? '#2f6b63' : '#3d7f74';
+        ctx2.fillRect(x + Math.round((m.w - w) / 2), base - k, w, 1);
+      }
+      // водопад, стекающий со скалы
+      if (m.fall) {
+        const fx = x + Math.round(m.w / 2) - 1;
+        for (let k = 0; k < 26; k++) {
+          const shimmer = (Math.floor(t * 14) + k) % 3;
+          ctx2.fillStyle = shimmer === 0 ? '#bfe8f0' : '#8fd0e0';
+          ctx2.fillRect(fx + (k % 2), base - 26 + k, 2, 1);
+        }
+        // брызги внизу
+        ctx2.fillStyle = '#d8f0f4';
+        ctx2.fillRect(fx - 3, base - 2, 8, 2);
+      }
+    });
+
+    // --- полоса тумана у подножия ---
+    ctx.fillStyle = 'rgba(210,235,220,0.35)';
+    ctx.fillRect(0, GY - 26, W, 8);
+    ctx.fillStyle = 'rgba(210,235,220,0.2)';
+    ctx.fillRect(0, GY - 20, W, 6);
+
+    // --- ближние холмы ---
+    Biome.parallax(ctx, cam, 0.22, 336, this.nearMountains, (ctx2, x, m) => {
+      const base = GY + 3; // холмы сидят на земле
+      for (let k = 0; k < m.h; k++) {
+        const w = Math.round(m.w * (1 - 0.9 * (k / m.h)));
+        ctx2.fillStyle = k > m.h * 0.5 ? '#2b5f3f' : '#35704a';
+        ctx2.fillRect(x + Math.round((m.w - w) / 2), base - k, w, 1);
+      }
+    });
+
+    // --- деревья трёх видов ---
+    Biome.parallax(ctx, cam, 0.38, 324, this.trees, (ctx2, x, tr) => {
+      const base = GY + 2; // стволы стоят на земле
+      if (tr.kind === 0) {
+        // широкая тропическая крона
+        ctx2.fillStyle = '#4a3520';
+        ctx2.fillRect(x + 3, base - tr.h, 4, tr.h);
+        ctx2.fillStyle = '#276b34';
+        ctx2.fillRect(x - tr.w / 2 + 3, base - tr.h - 10, tr.w, 12);
+        ctx2.fillRect(x - tr.w / 4 + 3, base - tr.h - 16, tr.w / 2, 8);
+        ctx2.fillStyle = '#3fae4a';
+        ctx2.fillRect(x - tr.w / 3 + 3, base - tr.h - 12, tr.w / 2, 6);
+        ctx2.fillStyle = '#57c25c';
+        ctx2.fillRect(x - tr.w / 4 + 3, base - tr.h - 15, 4, 3);
+      } else if (tr.kind === 1) {
+        // пальма
+        ctx2.fillStyle = '#6b5030';
+        for (let k = 0; k < tr.h; k++) ctx2.fillRect(x + 2 + Math.round(Math.sin(k / 9) * 3), base - k, 2, 1);
+        const topX = x + 2 + Math.round(Math.sin(tr.h / 9) * 3);
+        ctx2.fillStyle = '#2f7a3a';
+        ctx2.fillRect(topX - 8, base - tr.h - 2, 7, 2);
+        ctx2.fillRect(topX + 1, base - tr.h - 2, 7, 2);
+        ctx2.fillRect(topX - 5, base - tr.h - 4, 10, 2);
+        ctx2.fillStyle = '#43964a';
+        ctx2.fillRect(topX - 3, base - tr.h - 5, 6, 2);
+      } else {
+        // сухое дерево с vines
+        ctx2.fillStyle = '#5c4526';
+        ctx2.fillRect(x + 2, base - tr.h, 3, tr.h);
+        ctx2.fillRect(x - 3, base - tr.h + 6, 6, 2);
+        ctx2.fillRect(x + 4, base - tr.h + 10, 6, 2);
+        ctx2.fillStyle = '#3f7a3a';
+        ctx2.fillRect(x - 2, base - tr.h + 8, 1, 6);
+        ctx2.fillRect(x + 8, base - tr.h + 12, 1, 8);
+      }
+    });
+
+    // --- кусты у самой земли ---
+    Biome.parallax(ctx, cam, 0.72, 320, this.bushes, (ctx2, x, b) => {
+      const base = GY + 2; // кусты на земле, а не в воздухе
+      ctx2.fillStyle = '#276b34';
+      ctx2.fillRect(x, base - b.h, b.w, b.h);
+      ctx2.fillRect(x + 2, base - b.h - 3, b.w - 4, 4);
+      ctx2.fillStyle = '#3fae4a';
+      ctx2.fillRect(x + 2, base - b.h - 1, b.w - 6, 2);
+      ctx2.fillStyle = '#d94f6b';  // цветок
+      if (b.w > 14) ctx2.fillRect(x + b.w - 5, base - b.h - 3, 2, 2);
+    });
+
+    // --- крона сверху с лианами ---
+    Biome.parallax(ctx, cam, 0.85, 324, this.canopy, (ctx2, x, c) => {
+      ctx2.fillStyle = '#1f4f26';
+      ctx2.fillRect(x - c.r, 0, c.r * 2, 11);
+      ctx2.fillRect(x - c.r / 2, 11, c.r, 5);
+      ctx2.fillStyle = '#2b6b31';
+      ctx2.fillRect(x - c.r + 3, 4, c.r, 4);
+      ctx2.fillStyle = '#173d1e';
+      ctx2.fillRect(x - c.r + 1, 9, 4, 2);
+      // лианы, слегка покачивающиеся
+      for (let v = 0; v < c.vines; v++) {
+        const vx = x - c.r + 4 + v * 7;
+        const sway = Math.round(Math.sin(t * 1.1 + v + x * 0.05) * 2);
+        const len = 12 + (v * 5) % 14;
+        ctx2.fillStyle = '#2f6b35';
+        ctx2.fillRect(vx + sway, 14, 1, len);
+        ctx2.fillStyle = '#4e9a3f';
+        ctx2.fillRect(vx + sway - 1, 14 + len - 2, 3, 2);
+      }
+    });
+
+    // --- лучи света сквозь крону ---
+    ctx.save();
+    ctx.globalAlpha = 0.07;
+    ctx.fillStyle = '#fff8d8';
+    const rayShift = (cam.x * 0.5) % 90;
+    for (let i = -1; i < 6; i++) {
+      const rx = i * 90 - rayShift;
+      ctx.beginPath();
+      ctx.moveTo(rx, 0);
+      ctx.lineTo(rx + 26, 0);
+      ctx.lineTo(rx + 60, GY);
+      ctx.lineTo(rx + 20, GY);
+      ctx.closePath();
+      ctx.fill();
+    }
+    ctx.restore();
+  }
+
+  drawForeground(ctx, cam) {
+    const t = this.time;
+    const W = CONFIG.WIDTH;
+    const GY = CONFIG.GROUND_Y;
+
+    // стайка птиц, пересекающих экран
+    for (const b of this.birds) {
+      const bx = ((b.x + t * b.speed) % (W + 80)) - 40;
+      const by = b.y + Math.sin(t * 2 + b.phase) * 4;
+      const flap = Math.floor(t * 8 + b.phase) % 2;
+      ctx.fillStyle = '#1c2a24';
+      ctx.fillRect(Math.round(bx), Math.round(by), 3, 1);
+      ctx.fillRect(Math.round(bx) - (flap ? 2 : 1), Math.round(by) - 1, 2, 1);
+      ctx.fillRect(Math.round(bx) + 2, Math.round(by) - 1, 2, 1);
+    }
+
+    // светлячки-споры
+    ctx.fillStyle = '#d8f5a3';
+    for (let i = 0; i < 7; i++) {
+      const x = ((i * 61 + t * 10 * (i % 2 ? 1 : -1)) % (W + 40)) - 20;
+      const y = 36 + Math.sin(t * 1.4 + i * 2.1) * 20 + i * 13;
+      const blink = Math.floor(t * 4 + i) % 3 !== 0;
+      if (blink) ctx.fillRect(Math.round(x), Math.round(y), 2, 2);
+    }
+
+    // бабочки над травой
+    for (const b of this.flutters) {
+      const bx = ((b.x - t * 16) % (W + 60) + W + 60) % (W + 60) - 30;
+      const by = b.y + Math.sin(t * 2.4 + b.phase) * 6;
+      const flap = Math.floor(t * 10 + b.phase) % 2;
+      ctx.fillStyle = b.color;
+      ctx.fillRect(Math.round(bx), Math.round(by), 2, 2);
+      ctx.fillRect(Math.round(bx) + (flap ? -2 : -1), Math.round(by) - 1, 2, 1);
+      ctx.fillRect(Math.round(bx) + 2, Math.round(by) - 1, 2, 1);
+    }
+
+    // папоротники, грибы и цветы вдоль земли (передний план — глубина сцены)
+    Biome.parallax(ctx, cam, 1.05, 350, this.ferns, (ctx2, x, f) => {
+      if (f.kind === 0) {
+        ctx2.fillStyle = '#2f6b35';
+        ctx2.fillRect(x, GY - 6, 1, 6);
+        ctx2.fillRect(x - 3, GY - 5, 3, 1);
+        ctx2.fillRect(x + 1, GY - 4, 3, 1);
+        ctx2.fillRect(x - 2, GY - 7, 2, 1);
+        ctx2.fillStyle = '#4e9a3f';
+        ctx2.fillRect(x + 1, GY - 6, 3, 1);
+      } else if (f.kind === 1) {
+        ctx2.fillStyle = '#efe3c8';
+        ctx2.fillRect(x, GY - 4, 2, 4);
+        ctx2.fillStyle = '#b03027';
+        ctx2.fillRect(x - 2, GY - 7, 6, 3);
+        ctx2.fillStyle = '#efe3c8';
+        ctx2.fillRect(x - 1, GY - 6, 1, 1);
+        ctx2.fillRect(x + 1, GY - 5, 1, 1);
+      } else {
+        ctx2.fillStyle = '#3fae4a';
+        ctx2.fillRect(x, GY - 5, 1, 5);
+        ctx2.fillRect(x + 2, GY - 4, 1, 4);
+        ctx2.fillRect(x + 4, GY - 3, 1, 3);
+        ctx2.fillStyle = '#d94f6b';
+        ctx2.fillRect(x, GY - 7, 2, 2);
+      }
+    });
+  }
+
+  getPattern(d) {
+    const rng = this.rng;
+    const P = (weight, value) => ({ weight, value });
+    // Джунгли: лианы, ямы, змеи, ягуары и летучие мыши (шипы и воины — другие локации)
+    const table = [
+      P(3, { length: 110, spawns: [], items: Biome.idolArc(40, 4, 30) }),
+      P(3, { length: 145, spawns: [{ type: 'vine', at: 60 }], items: Biome.idolArc(50, 5, 48) }),
+      P(3, {
+        length: 150,
+        spawns: [{ type: 'vine', at: 70 }],
+        items: [{ type: 'idol', at: 60, alt: 0 }, { type: 'idol', at: 72, alt: 0 }, { type: 'idol', at: 84, alt: 0 }],
+      }),
+      P(3, (dd) => ({
+        length: 155,
+        spawns: [{ type: 'pit', at: 50, w: dd > 0.55 ? 42 : 34 }],
+        items: Biome.idolArc(44, 4, 46),
+      })),
+      P(d > 0.1 ? 2 : 0, { length: 150, spawns: [{ type: 'snake', at: 95 }], items: [] }),
+      P(d > 0.3 ? 2 : 0, {
+        length: 175,
+        spawns: [{ type: 'vine', at: 60 }, { type: 'pit', at: 128, w: 34 }], // связка «скользи и прыгай»
+        items: [],
+      }),
+      P(d > 0.2 ? 2 : 0, {
+        length: 200,
+        spawns: [{ type: 'vine', at: 60 }, { type: 'vine', at: 89 }],  // длинное скольжение
+        items: [{ type: 'idol', at: 56, alt: 0 }, { type: 'idol', at: 74, alt: 0 }, { type: 'idol', at: 92, alt: 0 }],
+      }),
+      P(d > 0.25 ? 2 : 0, (dd) => ({
+        length: 165,
+        spawns: dd > 0.6
+          ? [{ type: 'bat', at: 95, alt: 19 }, { type: 'bat', at: 128, alt: 19 }]
+          : [{ type: 'bat', at: 95, alt: 19 }],
+        items: [],
+      })),
+      P(d > 0.4 ? 2 : 0, { length: 200, spawns: [{ type: 'jaguar', at: 150 }], items: [] }),
+      P(d > 0.35 ? 1.5 : 0, {
+        length: 190, spawns: [{ type: 'vine', at: 60 }, { type: 'snake', at: 134 }], items: [],
+      }),
+      P(d > 0.45 ? 1.5 : 0, {
+        length: 190, spawns: [{ type: 'pit', at: 50, w: 34 }, { type: 'snake', at: 134 }], items: [],
+      }),
+      P(0.6, { length: 130, spawns: [], items: [{ type: 'heart', at: 60, alt: 32 }] }),
+    ];
+    const picked = Biome.weightedPick(rng, table);
+    return typeof picked === 'function' ? picked(d) : picked;
+  }
+}
+
+</script>
+  <script>
+/* ==== js/world/Village.js ==== */
+/**
+ * Village — деревня аборигенов: закатное небо, пальмы, хижины с дымом,
+ * резные тотемы, заборы, костры с анимированным пламенем.
+ * Здесь активнее воины с копьями и верёвки-ловушки.
+ */
+class Village extends Biome {
+  constructor(seed) {
+    super(seed);
+    const rng = this.rng;
+
+    this.clouds = [];
+    for (let i = 0; i < 5; i++) {
+      this.clouds.push({ x: i * 68 + rng() * 26, y: 12 + rng() * 22, w: 34 + rng() * 26, h: 5 + rng() * 3 });
+    }
+
+    this.farHills = [];
+    for (let i = 0; i < 6; i++) {
+      this.farHills.push({ x: i * 58 + rng() * 18, w: 48 + rng() * 28, h: 24 + rng() * 20 });
+    }
+
+    this.palms = [];
+    for (let i = 0; i < 6; i++) {
+      this.palms.push({ x: i * 54 + rng() * 20, h: 28 + rng() * 14, flip: rng() > 0.5 });
+    }
+
+    this.huts = [];
+    for (let i = 0; i < 6; i++) {
+      this.huts.push({ x: i * 60 + rng() * 22, w: 24 + rng() * 12, h: 15 + rng() * 7, smoke: rng() > 0.35 });
+    }
+
+    this.totems = [];
+    for (let i = 0; i < 5; i++) {
+      this.totems.push({ x: i * 76 + rng() * 26, h: 24 + rng() * 14 });
+    }
+
+    this.fences = [];
+    for (let i = 0; i < 6; i++) {
+      this.fences.push({ x: i * 50 + rng() * 18, posts: 3 + Math.floor(rng() * 3) });
+    }
+
+    this.fires = [];
+    for (let i = 0; i < 4; i++) {
+      this.fires.push({ x: i * 92 + rng() * 30 });
+    }
+
+    this.grass = [];
+    for (let i = 0; i < 12; i++) {
+      this.grass.push({ x: i * 26 + rng() * 10, h: 5 + rng() * 6 });
+    }
+
+    // сушильные стойки: ткань и рыба (мизасцена жизни деревни)
+    this.racks = [];
+    for (let i = 0; i < 3; i++) {
+      this.racks.push({ x: i * 121 + rng() * 40, cloth: rng() > 0.5 });
+    }
+
+    // жители у хижин (каждая вторая хижина — со своим владельцем)
+    this.huts.forEach((h, i) => {
+      h.villager = i % 2 === 0;
+    });
+  }
+
+  get name() { return 'ДЕРЕВНЯ'; }
+  get track() { return 'village'; }
+  get skyTop() { return '#6d3a86'; }
+  get skyBottom() { return '#f7a04b'; }
+  get groundTop() { return '#b98a4b'; }
+  get groundDirt() { return '#8a5a2e'; }
+  get groundShade() { return '#6e4522'; }
+  get groundLine() { return '#5c381b'; }
+
+  drawBackground(ctx, cam) {
+    const W = CONFIG.WIDTH, GY = CONFIG.GROUND_Y;
+    const t = this.time;
+
+    // --- закатный градиент в три слоя ---
+    const g = ctx.createLinearGradient(0, 0, 0, GY);
+    g.addColorStop(0, this.skyTop);
+    g.addColorStop(0.55, '#c95e63');
+    g.addColorStop(1, this.skyBottom);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, GY);
+
+    // --- большое низкое солнце с градиентными кольцами ---
+    const sunX = 200 - ((cam.x * 0.035) % 700);
+    const sunY = GY - 42;
+    ctx.fillStyle = 'rgba(255,210,122,0.22)';
+    ctx.fillRect(sunX - 26, sunY - 26, 52, 52);
+    ctx.fillStyle = 'rgba(255,210,122,0.4)';
+    ctx.fillRect(sunX - 20, sunY - 20, 40, 40);
+    ctx.fillStyle = '#ffd27a';
+    ctx.fillRect(sunX - 15, sunY - 15, 30, 30);
+    ctx.fillStyle = '#ffe9a8';
+    ctx.fillRect(sunX - 9, sunY - 9, 18, 18);
+
+    // --- вытянутые облачка в свете заката ---
+    Biome.parallax(ctx, cam, 0.07, 340, this.clouds, (ctx2, x, c) => {
+      ctx2.fillStyle = '#e8a06a';
+      ctx2.fillRect(x, c.y, c.w, c.h);
+      ctx2.fillStyle = '#f7c38a';
+      ctx2.fillRect(x + 4, c.y - 2, c.w - 12, 2);
+      ctx2.fillStyle = '#b96a52';
+      ctx2.fillRect(x + 2, c.y + c.h, c.w - 8, 1);
+    });
+
+    // --- дальние силуэты холмов ---
+    Biome.parallax(ctx, cam, 0.12, 348, this.farHills, (ctx2, x, m) => {
+      const base = GY + 3; // холмы сидят на земле
+      for (let k = 0; k < m.h; k++) {
+        const w = Math.round(m.w * (1 - 0.92 * (k / m.h)));
+        ctx2.fillStyle = k > m.h * 0.5 ? '#5c3050' : '#6d3a5e';
+        ctx2.fillRect(x + Math.round((m.w - w) / 2), base - k, w, 1);
+      }
+    });
+
+    // --- пальмы ---
+    Biome.parallax(ctx, cam, 0.28, 324, this.palms, (ctx2, x, p) => {
+      const base = GY + 2; // пальмы стоят на земле
+      const dir = p.flip ? -1 : 1;
+      ctx2.fillStyle = '#5c4526';
+      for (let k = 0; k < p.h; k++) {
+        ctx2.fillRect(x + Math.round(Math.sin(k / 12) * 4 * dir), base - k, 2, 1);
+      }
+      const topX = x + Math.round(Math.sin(p.h / 12) * 4 * dir);
+      ctx2.fillStyle = '#3f7a3a';
+      ctx2.fillRect(topX - 9 * dir, base - p.h - 2, 8 * dir * (dir > 0 ? 1 : -1) || 8, 2);
+      ctx2.fillRect(topX - 1, base - p.h - 2, 9, 2);
+      ctx2.fillRect(topX - 6, base - p.h - 4, 12, 2);
+      ctx2.fillStyle = '#4e9a3f';
+      ctx2.fillRect(topX - 4, base - p.h - 5, 8, 2);
+      // кокосы
+      ctx2.fillStyle = '#6b4a25';
+      ctx2.fillRect(topX - 2, base - p.h, 2, 2);
+    });
+
+    // --- хижины с соломенными крышами и дымом ---
+    Biome.parallax(ctx, cam, 0.4, 360, this.huts, (ctx2, x, hut) => {
+      const base = GY + 2; // хижины стоят на земле
+      // стены из бамбука
+      ctx2.fillStyle = '#7a5230';
+      ctx2.fillRect(x, base - hut.h, hut.w, hut.h);
+      ctx2.fillStyle = '#c9a86a';
+      for (let i = 1; i < hut.w; i += 5) ctx2.fillRect(x + i, base - hut.h, 2, hut.h);
+      ctx2.fillStyle = '#5c381b';
+      ctx2.fillRect(x, base - hut.h, hut.w, 2);
+      // крыша из соломы (ярусы)
+      ctx2.fillStyle = '#d9b26a';
+      ctx2.fillRect(x - 4, base - hut.h - 8, hut.w + 8, 8);
+      ctx2.fillStyle = '#c99a4b';
+      ctx2.fillRect(x - 1, base - hut.h - 12, hut.w + 2, 5);
+      ctx2.fillStyle = '#e8c882';
+      ctx2.fillRect(x + 2, base - hut.h - 13, hut.w - 4, 2);
+      // дверь и огонёк внутри
+      ctx2.fillStyle = '#3d2a17';
+      ctx2.fillRect(x + hut.w / 2 - 3, base - 9, 6, 9);
+      ctx2.fillStyle = '#e8a53a';
+      ctx2.fillRect(x + hut.w / 2 - 2, base - 6, 4, 3);
+      // дым
+      if (hut.smoke) {
+        for (let i = 0; i < 4; i++) {
+          const rise = (t * 12 + i * 10) % 40;
+          ctx2.globalAlpha = Math.max(0, 0.45 - rise / 90);
+          ctx2.fillStyle = '#d8d3c8';
+          const drift = Math.sin(t * 1.6 + i * 1.7) * 3;
+          ctx2.fillRect(Math.round(x + hut.w / 2 + drift), Math.round(base - hut.h - 14 - rise), 3, 3);
+        }
+        ctx2.globalAlpha = 1;
+      }
+
+      // житель у хижины: копьё в руке, слегка покачивается
+      if (hut.villager) {
+        const vx = Math.round(x + hut.w + 5);
+        const bob = Math.floor(t * 2 + hut.x) % 2;
+        ctx2.fillStyle = '#3d2a17';          // копьё
+        ctx2.fillRect(vx + 4, base - 10 - bob, 1, 10);
+        ctx2.fillStyle = '#9aa3ad';          // наконечник
+        ctx2.fillRect(vx + 4, base - 12 - bob, 1, 2);
+        ctx2.fillStyle = '#8d5a3b';          // тело
+        ctx2.fillRect(vx + 1, base - 6 - bob, 3, 4);
+        ctx2.fillStyle = '#d9b26a';          // юбка из травы
+        ctx2.fillRect(vx, base - 4 - bob, 4, 2);
+        ctx2.fillStyle = '#a8703f';          // голова
+        ctx2.fillRect(vx + 1, base - 9 - bob, 2, 3);
+        ctx2.fillStyle = '#b03027';          // перо
+        ctx2.fillRect(vx + 2, base - 11 - bob, 1, 2);
+      }
+    });
+
+    // --- тотемные столбы с «лицами» ---
+    Biome.parallax(ctx, cam, 0.52, 380, this.totems, (ctx2, x, tot) => {
+      const base = GY + 2; // тотемы стоят на земле
+      ctx2.fillStyle = '#8a4b23';
+      ctx2.fillRect(x, base - tot.h, 9, tot.h);
+      ctx2.fillStyle = '#6b3717';
+      ctx2.fillRect(x + 7, base - tot.h, 2, tot.h);
+      // три «лица»
+      const faces = 3;
+      for (let f = 0; f < faces; f++) {
+        const fy = base - tot.h + 3 + f * Math.floor((tot.h - 4) / faces);
+        ctx2.fillStyle = '#e0c53a';
+        ctx2.fillRect(x + 1, fy, 2, 2);
+        ctx2.fillRect(x + 5, fy, 2, 2);
+        ctx2.fillStyle = f % 2 ? '#b03027' : '#3fae4a';
+        ctx2.fillRect(x + 2, fy + 3, 4, 2);
+      }
+      // «волосы» из перьев
+      ctx2.fillStyle = '#b03027';
+      ctx2.fillRect(x - 1, base - tot.h - 4, 3, 4);
+      ctx2.fillStyle = '#e0c53a';
+      ctx2.fillRect(x + 3, base - tot.h - 5, 3, 5);
+      ctx2.fillStyle = '#3fae4a';
+      ctx2.fillRect(x + 7, base - tot.h - 4, 3, 4);
+    });
+
+    // --- заборы из кольев ---
+    Biome.parallax(ctx, cam, 0.66, 300, this.fences, (ctx2, x, f) => {
+      const base = GY + 2; // колья воткнуты в землю
+      for (let i = 0; i < f.posts; i++) {
+        const px = x + i * 8;
+        ctx2.fillStyle = '#6b4a25';
+        ctx2.fillRect(px, base - 9, 2, 9);
+        ctx2.fillStyle = '#845c30';
+        ctx2.fillRect(px, base - 9, 1, 9);
+        ctx2.fillStyle = '#54381b';
+        ctx2.fillRect(px, base - 10, 2, 1);
+      }
+      ctx2.fillStyle = '#54381b';
+      ctx2.fillRect(x, base - 7, (f.posts - 1) * 8 + 2, 1);
+      ctx2.fillRect(x, base - 3, (f.posts - 1) * 8 + 2, 1);
+    });
+
+    // --- костры с пламенем и световым пятном ---
+    Biome.parallax(ctx, cam, 0.8, 460, this.fires, (ctx2, x, f) => {
+      const base = GY + 2; // костры на самой земле
+      // дрова
+      ctx2.fillStyle = '#5c381b';
+      ctx2.fillRect(x - 2, base - 3, 9, 2);
+      ctx2.fillStyle = '#6b4a25';
+      ctx2.fillRect(x, base - 4, 6, 2);
+      // пламя (3 языка, анимация)
+      const fl = Math.floor(t * 9 + x) % 3;
+      ctx2.fillStyle = '#e07a2e';
+      ctx2.fillRect(x, base - 8 - fl, 6, 5 + fl);
+      ctx2.fillStyle = '#ffd27a';
+      ctx2.fillRect(x + 1, base - 7 - fl, 4, 4 + fl);
+      ctx2.fillStyle = '#fff3c8';
+      ctx2.fillRect(x + 2, base - 5, 2, 2);
+      // свет на земле
+      ctx2.fillStyle = 'rgba(255,180,90,0.18)';
+      ctx2.fillRect(x - 8, base, 22, 3);
+    });
+
+    // сушильные стойки: развивающаяся ткань и рыба (мизасцена деревни)
+    Biome.parallax(ctx, cam, 0.4, 360, this.racks, (ctx2, x, r) => {
+      const base = GY + 2;
+      ctx2.fillStyle = '#6b4a25';
+      ctx2.fillRect(x, base - 14, 1, 14);
+      ctx2.fillRect(x + 16, base - 14, 1, 14);
+      ctx2.fillRect(x, base - 14, 17, 1);
+      if (r.cloth) {
+        const sway = Math.round(Math.sin(t * 2 + r.x) * 2);
+        ctx2.fillStyle = '#d94f6b';
+        ctx2.fillRect(x + 3 + sway, base - 13, 6, 8);
+        ctx2.fillStyle = '#e07a8a';
+        ctx2.fillRect(x + 3 + sway, base - 13, 6, 2);
+      } else {
+        for (let i = 0; i < 3; i++) {
+          const fy = Math.round(base - 12 + Math.sin(t * 1.5 + i + r.x));
+          ctx2.fillStyle = '#9aa3ad';
+          ctx2.fillRect(x + 3 + i * 4, fy, 2, 6);
+          ctx2.fillStyle = '#5c5e6b';
+          ctx2.fillRect(x + 3 + i * 4, fy + 4, 2, 1);
+        }
+      }
+    });
+  }
+
+  drawForeground(ctx, cam) {
+    const t = this.time;
+
+    // колышущаяся трава переднего плана
+    const off = (cam.x * 1.2) % 312;
+    for (const gr of this.grass) {
+      let x = gr.x - off;
+      if (x < 0) x += 312;
+      for (let rep = -1; rep <= 1; rep++) {
+        const sx = Math.round(x + rep * 312);
+        if (sx < -10 || sx > CONFIG.WIDTH + 10) continue;
+        const sway = Math.round(Math.sin(t * 2.2 + gr.x) * 2);
+        ctx.fillStyle = '#8a6a2e';
+        ctx.fillRect(sx + sway, CONFIG.GROUND_Y - gr.h, 1, gr.h);
+        ctx.fillRect(sx + 3 + sway, CONFIG.GROUND_Y - gr.h + 2, 1, gr.h - 2);
+        ctx.fillStyle = '#a8843a';
+        ctx.fillRect(sx + 6 - sway, CONFIG.GROUND_Y - gr.h + 1, 1, gr.h - 1);
+      }
+    }
+
+    // светлячки сумерек
+    for (let i = 0; i < 5; i++) {
+      const x = ((i * 77 + t * 9 * (i % 2 ? -1 : 1)) % (CONFIG.WIDTH + 40)) - 20;
+      const y = 70 + Math.sin(t * 1.8 + i * 2.4) * 22 + i * 11;
+      if (Math.floor(t * 5 + i) % 3 !== 0) {
+        ctx.fillStyle = '#ffe98a';
+        ctx.fillRect(Math.round(x), Math.round(y), 2, 2);
+      }
+    }
+  }
+
+  getPattern(d) {
+    const rng = this.rng;
+    const P = (weight, value) => ({ weight, value });
+    // Деревня: верёвки-ловушки, ямы, воины с копьями и ягуары (у каждого локация свой набор)
+    const table = [
+      P(3, { length: 110, spawns: [], items: Biome.idolArc(40, 4, 30) }),
+      P(3, { length: 145, spawns: [{ type: 'rope', at: 60 }], items: Biome.idolArc(50, 5, 48) }),
+      P(3, {
+        length: 150,
+        spawns: [{ type: 'rope', at: 70 }],
+        items: [{ type: 'idol', at: 60, alt: 0 }, { type: 'idol', at: 72, alt: 0 }, { type: 'idol', at: 84, alt: 0 }],
+      }),
+      P(3, (dd) => ({
+        length: 155,
+        spawns: [{ type: 'pit', at: 50, w: dd > 0.5 ? 42 : 34 }],
+        items: Biome.idolArc(44, 4, 46),
+      })),
+      P(d > 0.2 ? 2.5 : 0, { length: 190, spawns: [{ type: 'warrior', at: 120 }], items: [] }),
+      P(d > 0.3 ? 2 : 0, {
+        length: 195, spawns: [{ type: 'warrior', at: 90 }, { type: 'rope', at: 155 }], items: [],
+      }),
+      P(d > 0.2 ? 2 : 0, {
+        length: 205,
+        spawns: [{ type: 'rope', at: 55 }, { type: 'rope', at: 84 }],   // длинное скольжение
+        items: [{ type: 'idol', at: 52, alt: 0 }, { type: 'idol', at: 70, alt: 0 }, { type: 'idol', at: 88, alt: 0 }],
+      }),
+      P(d > 0.35 ? 2 : 0, (dd) => ({
+        length: 200,
+        spawns: dd > 0.65
+          ? [{ type: 'bat', at: 100, alt: 19 }, { type: 'bat', at: 134, alt: 19 }]
+          : [{ type: 'bat', at: 100, alt: 19 }],
+        items: [],
+      })),
+      P(d > 0.45 ? 2 : 0, { length: 200, spawns: [{ type: 'jaguar', at: 150 }], items: [] }),
+      P(d > 0.4 ? 1.5 : 0, {
+        length: 195, spawns: [{ type: 'pit', at: 46, w: 34 }, { type: 'warrior', at: 140 }], items: [],
+      }),
+      P(0.6, { length: 130, spawns: [], items: [{ type: 'heart', at: 60, alt: 32 }] }),
+    ];
+    const picked = Biome.weightedPick(rng, table);
+    return typeof picked === 'function' ? picked(d) : picked;
+  }
+}
+
+</script>
+  <script>
+/* ==== js/world/Temple.js ==== */
+/**
+ * Temple — заброшенный храм майя: ночное небо со звёздами, дальние и
+ * ближние пирамиды со ступенями, стена с резными масками, обломки колонн,
+ * светящиеся факелы, висящие лианы, пылинки. Самая злая локация:
+ * статуи, длинные ямы, каменные балки под проскальзывание, воины.
+ */
+class Temple extends Biome {
+  constructor(seed) {
+    super(seed);
+    const rng = this.rng;
+
+    this.stars = [];
+    for (let i = 0; i < 40; i++) {
+      this.stars.push({ x: rng() * CONFIG.WIDTH, y: rng() * (CONFIG.GROUND_Y - 50), tw: rng() * 6 });
+    }
+
+    this.farPyramids = [];
+    for (let i = 0; i < 6; i++) {
+      this.farPyramids.push({ x: i * 64 + rng() * 24, w: 40 + rng() * 26, h: 26 + rng() * 22 });
+    }
+
+    this.pyramids = [];
+    for (let i = 0; i < 5; i++) {
+      this.pyramids.push({
+        x: i * 78 + rng() * 26,
+        w: 46 + rng() * 26,
+        h: 34 + rng() * 26,
+        door: rng() > 0.4,
+      });
+    }
+
+    this.masks = [];
+    for (let i = 0; i < 5; i++) {
+      this.masks.push({ x: i * 68 + rng() * 24, hue: rng() > 0.5 ? '#c9a83e' : '#7fae5a', glow: rng() > 0.5 });
+    }
+
+    this.columns = [];
+    for (let i = 0; i < 6; i++) {
+      this.columns.push({ x: i * 58 + rng() * 20, h: 26 + rng() * 22, broken: rng() > 0.35 });
+    }
+
+    this.torches = [];
+    for (let i = 0; i < 6; i++) this.torches.push({ x: i * 56 + rng() * 20 });
+
+    this.vines = [];
+    for (let i = 0; i < 9; i++) this.vines.push({ x: i * 44 + rng() * 16, len: 16 + rng() * 26 });
+
+    this.rubles = [];
+    for (let i = 0; i < 10; i++) this.rubles.push({ x: i * 36 + rng() * 14, w: 5 + rng() * 11 });
+
+    // руны на стене (слабо мерцают)
+    this.runes = [];
+    for (let i = 0; i < 6; i++) {
+      this.runes.push({ x: i * 57 + rng() * 30, kind: Math.floor(rng() * 3) });
+    }
+
+    // черепа и камни у самой земли
+    this.skulls = [];
+    for (let i = 0; i < 4; i++) {
+      this.skulls.push({ x: i * 93 + rng() * 34, flip: rng() > 0.5 });
+    }
+  }
+
+  get name() { return 'ХРАМ'; }
+  get track() { return 'temple'; }
+  get skyTop() { return '#151129'; }
+  get skyBottom() { return '#4a3160'; }
+  get groundTop() { return '#6a6f78'; }
+  get groundDirt() { return '#4a4e56'; }
+  get groundShade() { return '#3a3d44'; }
+  get groundLine() { return '#8a9099'; }
+
+  drawBackground(ctx, cam) {
+    const W = CONFIG.WIDTH, GY = CONFIG.GROUND_Y;
+    const t = this.time;
+
+    // --- ночное небо ---
+    const g = ctx.createLinearGradient(0, 0, 0, GY);
+    g.addColorStop(0, this.skyTop);
+    g.addColorStop(0.7, '#33254c');
+    g.addColorStop(1, this.skyBottom);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, GY);
+
+    // --- мерцающие звезды ---
+    const starOff = (cam.x * 0.03) % W;
+    for (const s of this.stars) {
+      const sx = ((s.x - starOff) % W + W) % W;
+      const alpha = 0.35 + 0.65 * Math.abs(Math.sin(t * 1.7 + s.tw));
+      ctx.fillStyle = 'rgba(235,235,215,' + alpha.toFixed(2) + ')';
+      ctx.fillRect(Math.round(sx), Math.round(s.y), 1, 1);
+      if (alpha > 0.9) {
+        ctx.fillRect(Math.round(sx) - 1, Math.round(s.y), 3, 1);
+        ctx.fillRect(Math.round(sx), Math.round(s.y) - 1, 1, 3);
+      }
+    }
+
+    // --- луна с ореолом и кратерами ---
+    const moonX = 70 - ((cam.x * 0.03) % 800);
+    ctx.fillStyle = 'rgba(232,224,200,0.14)';
+    ctx.fillRect(moonX - 16, 12, 32, 32);
+    ctx.fillStyle = 'rgba(232,224,200,0.3)';
+    ctx.fillRect(moonX - 13, 15, 26, 26);
+    ctx.fillStyle = '#e8e0c8';
+    ctx.fillRect(moonX - 10, 18, 20, 20);
+    ctx.fillStyle = '#d5cdaf';
+    ctx.fillRect(moonX + 4, 20, 6, 6);
+    ctx.fillStyle = '#c8c0a8';
+    ctx.fillRect(moonX - 6, 24, 4, 4);
+    ctx.fillRect(moonX + 1, 30, 3, 3);
+    ctx.fillRect(moonX - 8, 32, 2, 2);
+
+    // --- дальние силуэты пирамид со ступенями ---
+    Biome.parallax(ctx, cam, 0.14, 390, this.farPyramids, (ctx2, x, p) => {
+      const base = GY + 3; // пирамиды стоят на земле
+      for (let k = 0; k < p.h; k++) {
+        const w = Math.round(p.w * (1 - 0.75 * (k / p.h)));
+        ctx2.fillStyle = k > p.h * 0.55 ? '#211c38' : '#282243';
+        ctx2.fillRect(x + Math.round((p.w - w) / 2), base - k, w, 1);
+      }
+      // лестница по центру
+      ctx2.fillStyle = '#1a1630';
+      for (let k = 0; k < p.h; k += 4) {
+        const w = Math.round(p.w * (1 - 0.75 * (k / p.h)));
+        ctx2.fillRect(x + Math.round(p.w / 2) - 2, base - k, 4, 1);
+      }
+    });
+
+    // --- ближние проработанные пирамиды ---
+    Biome.parallax(ctx, cam, 0.3, 430, this.pyramids, (ctx2, x, p) => {
+      const base = GY + 2; // пирамиды стоят на земле
+      // ступени
+      for (let k = 0; k < p.h; k++) {
+        const w = Math.round(p.w * (1 - 0.7 * (k / p.h)));
+        ctx2.fillStyle = k % 4 === 0 ? '#3f3860' : (k > p.h * 0.5 ? '#383156' : '#443c68');
+        ctx2.fillRect(x + Math.round((p.w - w) / 2), base - k, w, 1);
+      }
+      // центральная лестница (светлые ступени)
+      for (let k = 0; k < p.h; k += 3) {
+        const w = Math.round(p.w * (1 - 0.7 * (k / p.h)));
+        ctx2.fillStyle = '#54497a';
+        ctx2.fillRect(x + Math.round(p.w / 2) - 3, base - k, 6, 1);
+      }
+      // храм на вершине
+      ctx2.fillStyle = '#4a4170';
+      ctx2.fillRect(x + p.w / 2 - 7, base - p.h - 9, 14, 10);
+      ctx2.fillStyle = '#332c50';
+      ctx2.fillRect(x + p.w / 2 - 9, base - p.h - 11, 18, 3);
+      ctx2.fillStyle = '#2a2444';
+      ctx2.fillRect(x + p.w / 2 - 5, base - p.h - 9, 10, 2);
+      // светящийся дверной проём
+      if (p.door) {
+        const pulse = 0.55 + 0.45 * Math.sin(t * 2.4 + x * 0.1);
+        ctx2.fillStyle = 'rgba(224,165,58,' + (0.3 + pulse * 0.3).toFixed(2) + ')';
+        ctx2.fillRect(x + p.w / 2 - 5, base - p.h - 6, 10, 7);
+        ctx2.fillStyle = '#e0a53a';
+        ctx2.fillRect(x + p.w / 2 - 3, base - p.h - 4, 6, 5);
+        ctx2.fillStyle = '#ffe9a8';
+        ctx2.fillRect(x + p.w / 2 - 2, base - p.h - 3, 4, 3);
+      }
+      // головы змей по углам основания
+      ctx2.fillStyle = '#54497a';
+      ctx2.fillRect(x - 4, base - 5, 6, 5);
+      ctx2.fillRect(x + p.w - 2, base - 5, 6, 5);
+      ctx2.fillStyle = '#c9a83e';
+      ctx2.fillRect(x - 3, base - 4, 2, 2);
+      ctx2.fillRect(x + p.w, base - 4, 2, 2);
+    });
+
+    // --- каменная стена с резными масками ---
+    const wallY = GY - 24;
+    ctx.fillStyle = '#272238';
+    ctx.fillRect(0, wallY, W, 4);
+    ctx.fillStyle = '#2f2946';
+    ctx.fillRect(0, wallY + 4, W, GY - wallY - 4);
+    // каменные блоки
+    const wallOff = (cam.x * 0.55) % 28;
+    ctx.fillStyle = '#373054';
+    for (let x = -wallOff; x < W; x += 28) {
+      ctx.fillRect(Math.round(x), wallY + 5, 12, 2);
+      ctx.fillRect(Math.round(x) + 6, wallY + 9, 12, 2);
+      ctx.fillRect(Math.round(x), wallY + 13, 12, 2);
+    }
+    ctx.fillStyle = '#221d34';
+    ctx.fillRect(0, wallY + 7, W, 1);
+    ctx.fillRect(0, wallY + 11, W, 1);
+    // барельефы-маски, у которых светятся глаза
+    Biome.parallax(ctx, cam, 0.55, 340, this.masks, (ctx2, x, m) => {
+      const my = wallY + 4;
+      ctx2.fillStyle = '#4a4170';
+      ctx2.fillRect(x, my, 14, 14);
+      ctx2.fillStyle = '#3a3358';
+      ctx2.fillRect(x + 2, my + 2, 10, 10);
+      // глаза-уголки и рот-зубы
+      ctx2.fillStyle = m.hue;
+      ctx2.fillRect(x + 3, my + 4, 3, 3);
+      ctx2.fillRect(x + 8, my + 4, 3, 3);
+      ctx2.fillStyle = '#2a2444';
+      ctx2.fillRect(x + 4, my + 5, 1, 1);
+      ctx2.fillRect(x + 9, my + 5, 1, 1);
+      ctx2.fillStyle = m.hue;
+      ctx2.fillRect(x + 4, my + 9, 6, 1);
+      ctx2.fillStyle = '#e8edf5';
+      ctx2.fillRect(x + 5, my + 9, 1, 2);
+      ctx2.fillRect(x + 8, my + 9, 1, 2);
+      // свечение глаз
+      if (m.glow) {
+        const pulse = Math.sin(t * 3 + x * 0.2) > 0.2;
+        if (pulse) {
+          ctx2.fillStyle = 'rgba(255,210,122,0.5)';
+          ctx2.fillRect(x + 2, my + 3, 5, 5);
+          ctx2.fillRect(x + 7, my + 3, 5, 5);
+        }
+      }
+    });
+
+    // --- руны на камне стены (слабо мерцают) ---
+    Biome.parallax(ctx, cam, 0.55, 340, this.runes, (ctx2, x, r) => {
+      const my = wallY + 6;
+      const glow = 0.22 + 0.18 * Math.sin(t * 1.6 + r.x * 0.3);
+      ctx2.fillStyle = 'rgba(224,165,58,' + glow.toFixed(2) + ')';
+      if (r.kind === 0) {
+        ctx2.fillRect(x, my, 1, 8);
+        ctx2.fillRect(x - 2, my, 5, 1);
+        ctx2.fillRect(x - 2, my + 7, 5, 1);
+      } else if (r.kind === 1) {
+        ctx2.fillRect(x, my, 4, 1);
+        ctx2.fillRect(x + 1, my + 2, 2, 1);
+        ctx2.fillRect(x, my + 4, 4, 1);
+        ctx2.fillRect(x + 1, my + 6, 2, 1);
+      } else {
+        ctx2.fillRect(x, my, 1, 8);
+        ctx2.fillRect(x + 3, my, 1, 8);
+        ctx2.fillRect(x, my + 3, 4, 1);
+      }
+    });
+
+    // --- обломки колонн ---
+    Biome.parallax(ctx, cam, 0.68, 370, this.columns, (ctx2, x, c) => {
+      const base = GY + 2; // колонны стоят на земле
+      ctx2.fillStyle = '#4a4e56';
+      ctx2.fillRect(x, base - c.h, 8, c.h);
+      ctx2.fillStyle = '#5a5f69';
+      ctx2.fillRect(x, base - c.h, 3, c.h);
+      // каннелюры
+      ctx2.fillStyle = '#3a3d44';
+      for (let i = 0; i < 4; i++) ctx2.fillRect(x + 5, base - c.h + 4 + i * 7, 1, 4);
+      // обломанный верх / капитель
+      if (c.broken) {
+        ctx2.fillStyle = '#3a3d44';
+        ctx2.fillRect(x + 2, base - c.h - 3, 4, 3);
+        ctx2.fillStyle = '#5a5f69';
+        ctx2.fillRect(x + 4, base - c.h - 4, 3, 2);
+      } else {
+        ctx2.fillStyle = '#5a5f69';
+        ctx2.fillRect(x - 2, base - c.h - 4, 12, 4);
+        ctx2.fillStyle = '#6a6f78';
+        ctx2.fillRect(x - 2, base - c.h - 4, 12, 1);
+      }
+      // мх снизу
+      ctx2.fillStyle = '#3e7a3a';
+      ctx2.fillRect(x, base - 2, 3, 2);
+    });
+
+    // --- факелы с анимированным пламенем и световым пятном ---
+    Biome.parallax(ctx, cam, 0.8, 460, this.torches, (ctx2, x, f) => {
+      const base = GY - 22;
+      // свет на стене
+      const pulse = 0.16 + 0.06 * Math.sin(t * 8 + f.x);
+      ctx2.fillStyle = 'rgba(255,170,80,' + pulse.toFixed(2) + ')';
+      ctx2.fillRect(x - 7, base - 14, 20, 20);
+      // держатель
+      ctx2.fillStyle = '#5c4a30';
+      ctx2.fillRect(x + 1, base, 3, 12);
+      ctx2.fillStyle = '#6a563a';
+      ctx2.fillRect(x, base, 5, 2);
+      ctx2.fillStyle = '#3d3122';
+      ctx2.fillRect(x + 1, base + 10, 3, 2);
+      // пламя из трёх языков
+      const fl = Math.floor(t * 10 + f.x) % 3;
+      ctx2.fillStyle = '#c94f1e';
+      ctx2.fillRect(x, base - 7 - fl, 5, 8 + fl);
+      ctx2.fillStyle = '#e07a2e';
+      ctx2.fillRect(x + 1, base - 5 - fl, 3, 6);
+      ctx2.fillStyle = '#ffd27a';
+      ctx2.fillRect(x + 1, base - 4, 3, 3);
+      ctx2.fillStyle = '#fff3c8';
+      ctx2.fillRect(x + 2, base - 3, 1, 2);
+    });
+
+    // --- висящие лианы (с покачиванием) ---
+    Biome.parallax(ctx, cam, 0.9, 340, this.vines, (ctx2, x, v) => {
+      const sway = Math.round(Math.sin(t * 1.3 + x * 0.2) * 3);
+      ctx2.fillStyle = '#26502e';
+      ctx2.fillRect(x + sway, 0, 2, v.len);
+      ctx2.fillStyle = '#357040';
+      ctx2.fillRect(x + 6 - sway, 0, 2, v.len - 6);
+      ctx2.fillStyle = '#2b6b31';
+      ctx2.fillRect(x - 2 + sway, v.len - 4, 5, 4);
+      ctx2.fillRect(x + 5 - sway, v.len - 9, 4, 3);
+      // узлы на лианах
+      ctx2.fillStyle = '#1f4f26';
+      ctx2.fillRect(x + sway, Math.round(v.len * 0.5), 2, 2);
+    });
+
+    // --- черепа и камни у земли ---
+    Biome.parallax(ctx, cam, 0.9, 330, this.skulls, (ctx2, x, s) => {
+      const base = GY + 2;
+      ctx2.fillStyle = '#c8c0a8';
+      ctx2.fillRect(x, base - 6, 6, 5);
+      ctx2.fillStyle = '#a8a08a';
+      ctx2.fillRect(x, base - 2, 6, 1);
+      ctx2.fillStyle = '#2a2444';
+      ctx2.fillRect(x + 1, base - 5, 1, 2);
+      ctx2.fillRect(x + 4, base - 5, 1, 2);
+      ctx2.fillStyle = '#4a4e56';
+      ctx2.fillRect(x + (s.flip ? -5 : 7), base - 2, 3, 2);
+    });
+  }
+
+  drawForeground(ctx, cam) {
+    const t = this.time;
+
+    // пылинки, мерно плывущие в свете
+    ctx.fillStyle = 'rgba(226,216,180,0.5)';
+    for (let i = 0; i < 10; i++) {
+      const x = ((i * 53 + t * 6 * (i % 2 ? 1 : -1)) % (CONFIG.WIDTH + 30)) - 15;
+      const y = 24 + Math.sin(t * 1.1 + i * 1.9) * 18 + i * 12;
+      ctx.fillRect(Math.round(x), Math.round(y) % CONFIG.GROUND_Y, 1, 1);
+    }
+
+    // угольки, поднимающиеся от факелов
+    for (let i = 0; i < 8; i++) {
+      const rise = (t * 22 + i * 30) % (CONFIG.GROUND_Y + 10);
+      const x = (((i * 67 + Math.sin(t * 2 + i) * 14 - t * 6) % (CONFIG.WIDTH + 40)) + CONFIG.WIDTH + 40) % (CONFIG.WIDTH + 40) - 20;
+      const alpha = Math.max(0, 0.8 - rise / (CONFIG.GROUND_Y * 0.8));
+      ctx.fillStyle = 'rgba(255,170,80,' + alpha.toFixed(2) + ')';
+      ctx.fillRect(Math.round(x), Math.round(CONFIG.GROUND_Y - rise), 1, 1);
+    }
+
+    // падающие листья
+    for (let i = 0; i < 3; i++) {
+      const fall = (t * 14 + i * 55) % (CONFIG.GROUND_Y + 20);
+      const x = 40 + i * 90 + Math.sin(t * 2 + i * 2.5) * 12;
+      ctx.fillStyle = '#3e7a3a';
+      ctx.fillRect(Math.round(x), Math.round(fall), 3, 2);
+      ctx.fillStyle = '#2b5f2c';
+      ctx.fillRect(Math.round(x) + 1, Math.round(fall) + 2, 2, 1);
+    }
+
+    // каменная крошка на земле переднего плана
+    const off = (cam.x * 1.15) % 90;
+    ctx.fillStyle = '#241f36';
+    for (let i = 0; i < 6; i++) {
+      const x = Math.round((((i * 17 - off) % 90) + 90) % 90) + i * 50 - 30;
+      if (x > -10 && x < CONFIG.WIDTH) ctx.fillRect(x, CONFIG.GROUND_Y + 2 + (i % 3) * 3, 4 + (i % 4) * 2, 3);
+    }
+
+    // тёмные пилястры по краям кадра (виньетка храма)
+    ctx.fillStyle = 'rgba(20,16,36,0.85)';
+    ctx.fillRect(0, 0, 6, CONFIG.HEIGHT);
+    ctx.fillRect(CONFIG.WIDTH - 6, 0, 6, CONFIG.HEIGHT);
+    ctx.fillStyle = 'rgba(20,16,36,0.35)';
+    ctx.fillRect(6, 0, 4, CONFIG.HEIGHT);
+    ctx.fillRect(CONFIG.WIDTH - 10, 0, 4, CONFIG.HEIGHT);
+  }
+
+  getPattern(d) {
+    const rng = this.rng;
+    const P = (weight, value) => ({ weight, value });
+    // Храм: шипы, статуи, балки, ямы, воины и мыши (свой набор — своя музыка, свои мобы)
+    const table = [
+      P(2.5, { length: 110, spawns: [], items: Biome.idolArc(40, 5, 30) }),
+      P(3, { length: 145, spawns: [{ type: 'spikes', at: 60 }], items: Biome.idolArc(50, 5, 48) }),
+      P(3, (dd) => ({
+        length: 160,
+        spawns: [{ type: 'pit', at: 50, w: dd > 0.4 ? 44 : 38 }],
+        items: Biome.idolArc(44, 4, 48),
+      })),
+      P(3, {
+        length: 150,
+        spawns: [{ type: 'beam', at: 70 }],
+        items: [{ type: 'idol', at: 60, alt: 0 }, { type: 'idol', at: 72, alt: 0 }, { type: 'idol', at: 84, alt: 0 }],
+      }),
+      P(d > 0.25 ? 2.5 : 0, { length: 200, spawns: [{ type: 'statue', at: 110 }], items: [] }),
+      P(d > 0.2 ? 2.5 : 0, { length: 190, spawns: [{ type: 'warrior', at: 120 }], items: [] }),
+      P(d > 0.3 ? 2 : 0, {
+        length: 210, spawns: [{ type: 'statue', at: 70 }, { type: 'spikes', at: 150 }], items: [],
+      }),
+      P(d > 0.2 ? 2 : 0, {
+        length: 215,
+        spawns: [{ type: 'beam', at: 58 }, { type: 'beam', at: 87 }],   // длинное скольжение
+        items: [{ type: 'idol', at: 54, alt: 0 }, { type: 'idol', at: 72, alt: 0 }, { type: 'idol', at: 91, alt: 0 }],
+      }),
+      P(d > 0.35 ? 2 : 0, (dd) => ({
+        length: 175,
+        spawns: dd > 0.6
+          ? [{ type: 'bat', at: 100, alt: 19 }, { type: 'bat', at: 134, alt: 19 }]
+          : [{ type: 'bat', at: 100, alt: 19 }],
+        items: [],
+      })),
+      P(d > 0.4 ? 2 : 0, {
+        length: 205, spawns: [{ type: 'spikes', at: 60 }, { type: 'warrior', at: 152 }], items: [],
+      }),
+      P(d > 0.45 ? 1.5 : 0, {
+        length: 200, spawns: [{ type: 'pit', at: 46, w: 38 }, { type: 'statue', at: 140 }], items: [],
+      }),
+      P(d > 0.5 ? 1.5 : 0, {
+        length: 210, spawns: [{ type: 'warrior', at: 80 }, { type: 'warrior', at: 170 }], items: [],
+      }),
+      P(d > 0.55 ? 1.5 : 0, {
+        length: 210, spawns: [{ type: 'beam', at: 55 }, { type: 'spikes', at: 130 }], items: [],
+      }),
+      P(0.5, { length: 130, spawns: [], items: [{ type: 'heart', at: 60, alt: 32 }] }),
+    ];
+    const picked = Biome.weightedPick(rng, table);
+    return typeof picked === 'function' ? picked(d) : picked;
+  }
+}
+
+</script>
+  <script>
+/* ==== js/world/Factories.js ==== */
+/**
+ * Фабрики (Factory Method) — централизованное создание сущностей.
+ *
+ * Генератор уровня описывает трассу данными («spawn: {type:'snake'}»),
+ * а конкретный класс выбирается здесь. Чтобы добавить нового врага,
+ * достаточно нового файла-класса и одной строки в switch —
+ * открытость-закрытость (Open/Closed).
+ */
+class EnemyFactory {
+  /** @returns {Enemy|null} */
+  static create(type, x, opts = {}) {
+    switch (type) {
+      case 'snake': return new Snake(x);
+      case 'jaguar': return new Jaguar(x);
+      case 'bat': return new Bat(x, opts.alt || 19);
+      case 'warrior': return new Warrior(x);
+      case 'spear': return new Spear(x, opts.y || CONFIG.GROUND_Y - 12);
+      default: return null;
+    }
+  }
+}
+
+class ObstacleFactory {
+  /** @returns {Obstacle|null} */
+  static create(type, x, opts = {}) {
+    switch (type) {
+      case 'spikes': return new Spikes(x, opts.w || 16);
+      case 'log': return new LowLog(x);
+      case 'vine': return new Vine(x);
+      case 'rope': return new RopeTrap(x);
+      case 'beam': return new StoneBeam(x);
+      case 'statue': return new Statue(x);
+      case 'pit': return new Pit(x, opts.w || 36);
+      default: return null;
+    }
+  }
+}
+
+class ItemFactory {
+  /** @returns {Item|null} */
+  static create(type, x, y) {
+    switch (type) {
+      case 'idol': return new Idol(x, y);
+      case 'heart': return new Heart(x, y);
+      default: return null;
+    }
+  }
+}
+
+</script>
+  <script>
+/* ==== js/world/World.js ==== */
+/**
+ * World — игровой мир: камера, земля, генератор трассы, столкновения.
+ *
+ * Это «композиция»: World владеет игроком, биомом, списками сущностей
+ * и частицами. Генерация уровня — данные-driven: биом отдаёт «паттерны»,
+ * а фабрики создают конкретные объекты.
+ */
+class World {
+  /** Длительность плавного перехода между локациями, с. */
+  static FADE_TIME = 1.8;
+
+  #obstacles = [];
+  #enemies = [];
+  #items = [];
+  #projectiles = [];
+  #particles = [];
+  #pits = [];
+  #biomeClasses = [Jungle, Village, Temple];
+  #biomeIndex = 0;
+  #loop = 0;
+  #spawnCursor = 0;
+  #nextBiomeAt = CONFIG.TRANSITION_EVERY; // в метрах
+  #rng = makeRandom(1337);
+  #shake = 0;
+  #startX = 60;
+  #biomeStartDist = 0;
+  #prevBiome = null;   // предыдущая локация (для плавного кроссфейда)
+  #transT = 1;         // таймер перехода (1 = переход завершён)
+  #heartsThisBiome = 0;
+
+  constructor(input) {
+    this.input = input;
+    this.player = new Player(60, CONFIG.GROUND_Y - Player.STAND_H);
+    this.player.world = this;
+    this.camera = { x: 0, y: 0 };
+    this.time = 0;
+    this.score = 0;
+    this.biome = new this.#biomeClasses[0](1337);
+    this.reset();
+
+    // Очки за предметы (World не знает про HUD — только события).
+    events.on('idol:collected', () => { this.score += CONFIG.IDOL_SCORE; });
+    events.on('enemy:stomped', () => { this.score += CONFIG.STOMP_SCORE; });
+    events.on('player:fall', () => { this.#shake = 0.35; });
+    events.on('player:hurt', () => { this.#shake = 0.3; });
+    // При смерти героя все объекты мира просто исчезают (без «улетания»).
+    events.on('player:dead', () => this.clearEntities());
+  }
+
+  /** Полный сброс мира (новая игра). */
+  reset() {
+    this.#obstacles.length = 0;
+    this.#enemies.length = 0;
+    this.#items.length = 0;
+    this.#projectiles.length = 0;
+    this.#particles.length = 0;
+    this.#pits.length = 0;
+    this.#biomeIndex = 0;
+    this.#loop = 0;
+    this.#nextBiomeAt = CONFIG.TRANSITION_EVERY;
+    this.#biomeStartDist = 0;
+    this.#prevBiome = null;
+    this.#transT = 1;
+    this.#heartsThisBiome = 0;
+    this.biome = new this.#biomeClasses[0](1337 + Math.floor(Math.random() * 1000));
+    this.player.reset(60, CONFIG.GROUND_Y - Player.STAND_H);
+    this.#startX = this.player.x;
+    this.camera.x = this.player.x - 60;
+    this.camera.y = 0;
+    this.time = 0;
+    this.score = 0;
+    this.#spawnCursor = this.player.x + CONFIG.WIDTH + 60;
+    this.biome.track && AudioManager.instance.playSong(this.biome.track);
+  }
+
+  // ------------------------------------------------------------------
+  // Геттеры состояния
+  // ------------------------------------------------------------------
+
+  /**
+   * Прогресс внутри текущей локации 0..1: скорость и сложность растут
+   * к её концу, а на новой локации всё начинается заново.
+   */
+  get biomeProgress() {
+    return clamp(
+      (this.distance - this.#biomeStartDist) / CONFIG.TRANSITION_EVERY,
+      0, 1,
+    );
+  }
+
+  /** Текущая скорость бега, px/с (постепенный разгон внутри биома). */
+  get speed() {
+    const p = this.biomeProgress;
+    const accel = Math.pow(p, CONFIG.RUN_EASE) * (CONFIG.RUN_MAX - CONFIG.RUN_START);
+    return Math.min(CONFIG.RUN_MAX, CONFIG.RUN_START + this.#loop * 9 + accel);
+  }
+
+  /** Пройденное расстояние в метрах. */
+  get distance() { return Math.max(0, Math.floor((this.player.x - this.#startX) / 16)); }
+
+  /** Сложность 0..1 — растёт с прогрессом локации и «петлями». */
+  get difficulty() {
+    return clamp(0.08 + this.#loop * 0.22 + this.biomeProgress * 0.85, 0, 1);
+  }
+
+  // ------------------------------------------------------------------
+  // Земля
+  // ------------------------------------------------------------------
+
+  /** Есть ли земля под точкой (нет — если там яма). */
+  isGroundAt(x) {
+    for (const pit of this.#pits) {
+      if (!pit.isDead && x > pit.x && x < pit.x + pit.w) return false;
+    }
+    return true;
+  }
+
+  /** Есть ли над игроком низкое препятствие (чтобы не вставать под бревном). */
+  hasOverhead(player) {
+    const standBox = {
+      x: player.x,
+      y: CONFIG.GROUND_Y - Player.STAND_H,
+      w: Player.STAND_W,
+      h: Player.STAND_H,
+    };
+    for (const o of this.#obstacles) {
+      if (o.isOverhead && !o.isDead && rectsOverlap(standBox, o.hitbox)) return true;
+    }
+    return false;
+  }
+
+  /** Безопасная точка для возрождения после падения. */
+  findSafeGround(x) {
+    let px = x + 8;
+    let guard = 0;
+    let moved = true;
+    while (moved && guard++ < 20) {
+      moved = false;
+      for (const pit of this.#pits) {
+        if (!pit.isDead && px > pit.x - 10 && px < pit.x + pit.w + 10) {
+          px = pit.x + pit.w + 16;
+          moved = true;
+        }
+      }
+    }
+    return px;
+  }
+
+  // ------------------------------------------------------------------
+  // Спавн
+  // ------------------------------------------------------------------
+
+  addObstacle(o) { o.world = this; this.#obstacles.push(o); if (o.isPit) this.#pits.push(o); }
+  addEnemy(e) { e.world = this; this.#enemies.push(e); }
+  addItem(i) { i.world = this; this.#items.push(i); }
+  addProjectile(p) { p.world = this; this.#projectiles.push(p); }
+
+  /** Снаряд (копьё воина и т.п.). */
+  spawnProjectile(p) { this.addProjectile(p); }
+
+  /** Все активные сущности (для отладки, тестов и будущих плагинов). */
+  get entities() {
+    return [...this.#obstacles, ...this.#enemies, ...this.#items, ...this.#projectiles];
+  }
+
+  /** При смерти игрока всё живое в мире просто исчезает — без «улетания» вверх. */
+  clearEntities() {
+    this.#obstacles.length = 0;
+    this.#enemies.length = 0;
+    this.#items.length = 0;
+    this.#projectiles.length = 0;
+    this.#pits.length = 0;
+    this.#particles.length = 0;
+  }
+
+  /** Создать сущности из «паттерна» биома. */
+  #spawnPattern(pattern, x0) {
+    for (const s of pattern.spawns || []) {
+      if (s.type === 'pit') {
+        this.addObstacle(ObstacleFactory.create('pit', x0 + s.at, s));
+      } else {
+        const obstacle = ObstacleFactory.create(s.type, x0 + s.at, s);
+        if (obstacle) this.addObstacle(obstacle);
+        else this.addEnemy(EnemyFactory.create(s.type, x0 + s.at, s));
+      }
+    }
+    for (const it of pattern.items || []) {
+      const y = CONFIG.GROUND_Y - (it.alt || 30) - 8;
+      const item = ItemFactory.create(it.type, x0 + it.at, y);
+      if (item) this.addItem(item);
+    }
+    this.#fixItemPlacement();
+  }
+
+  /**
+   * Монетки и сердечки не должны оказаться ВНУТРИ препятствий:
+   * если предмет пересекается с препятствием — поднимаем его над ним.
+   */
+  #fixItemPlacement() {
+    for (const it of this.#items) {
+      if (it.isDead) continue;
+      let box = { x: it.x, y: it.baseY, w: it.w, h: it.h };
+      for (const o of this.#obstacles) {
+        if (o.isDead) continue;
+        if (o.isPit) {
+          // над ямой монетка должна быть хотя бы на уровне земли
+          const overPit = box.x + box.w > o.x + 4 && box.x < o.x + o.w - 4;
+          if (overPit && box.y + box.h > CONFIG.GROUND_Y - 10) {
+            it.setBaseY(CONFIG.GROUND_Y - it.h - 14);
+            box = { x: it.x, y: it.baseY, w: it.w, h: it.h };
+          }
+          continue;
+        }
+        let guard = 0;
+        while (guard++ < 8 && rectsOverlap(box, { x: o.x, y: o.y, w: o.w, h: o.h })) {
+          it.setBaseY(it.baseY - 6);
+          box = { x: it.x, y: it.baseY, w: it.w, h: it.h };
+        }
+      }
+    }
+  }
+
+  /** Генерировать трассу впереди игрока. */
+  #generate() {
+    const ahead = this.player.x + CONFIG.WIDTH + 120;
+    while (this.#spawnCursor < ahead) {
+      const pattern = this.#withHeartGuarantee(this.biome.getPattern(this.difficulty));
+      this.#spawnPattern(pattern, this.#spawnCursor);
+      if ((pattern.items || []).some((i) => i.type === 'heart')) this.#heartsThisBiome++;
+      this.#spawnCursor += pattern.length + Math.floor(this.#rng() * 36);
+    }
+  }
+
+  /**
+   * Гарантия сердечек на каждой локации: как минимум одно (к ~30% пути),
+   * второе — с шансом на вторую половине. Недостающее подставляем сами.
+   */
+  #withHeartGuarantee(pattern) {
+    const p = this.biomeProgress;
+    if (this.#heartsThisBiome === 0 && p > 0.3) return this.#heartPattern();
+    if (this.#heartsThisBiome === 1 && p > 0.7 && this.#rng() < 0.5) return this.#heartPattern();
+    return pattern;
+  }
+
+  /** Паттерн с одним сердечком на уровне пояса (под прыжок-подбор). */
+  #heartPattern() {
+    return { length: 140, spawns: [], items: [{ type: 'heart', at: 60, alt: 34 }] };
+  }
+
+  /** Смена локации. */
+  #nextBiome() {
+    const prevLoop = this.#loop;
+    this.#biomeIndex = (this.#biomeIndex + 1) % this.#biomeClasses.length;
+    if (this.#biomeIndex === 0) this.#loop++;
+
+    // предыдущая локация остаётся на время плавного кроссфейда
+    this.#prevBiome = this.biome;
+    this.#transT = 0;
+
+    this.biome = new this.#biomeClasses[this.#biomeIndex](1337 + this.#loop * 31 + this.#biomeIndex * 7);
+    this.#biomeStartDist = this.distance; // скорость и сложность стартуют заново
+    this.#heartsThisBiome = 0;
+    // убираем «предыдущую» локацию впереди игрока
+    this.#obstacles = this.#obstacles.filter((o) => o.x < this.player.x);
+    this.#enemies = this.#enemies.filter((e) => e.x < this.player.x);
+    this.#items = this.#items.filter((i) => i.x < this.player.x);
+    // ямы впереди тоже принадлежали старой локации — иначе игрок
+    // проваливается под невидимую дыру (фикс бага перехода)
+    this.#pits = this.#pits.filter((p) => !p.isDead && p.x < this.player.x);
+    this.#projectiles.length = 0;
+    events.emit('biome:changed', { biome: this.biome, loop: this.#loop });
+    // все три локации пройдены — победа!
+    if (prevLoop === 0 && this.#loop === 1) {
+      events.emit('victory', { score: this.score, distance: this.distance });
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Частицы
+  // ------------------------------------------------------------------
+
+  /** Пыль, искры, кровь врагов. */
+  spawnParticles(x, y, color, count = 4, vy0 = -60) {
+    if (this.#particles.length > 220) return;
+    for (let i = 0; i < count; i++) {
+      this.#particles.push({
+        x, y,
+        vx: -this.speed * 0.3 + (Math.random() * 60 - 30),
+        vy: vy0 + Math.random() * 40 - 20,
+        life: 0.35 + Math.random() * 0.3,
+        color,
+        size: 1 + Math.floor(Math.random() * 2),
+      });
+    }
+  }
+
+  #updateParticles(dt) {
+    const ps = this.#particles;
+    for (let i = ps.length - 1; i >= 0; i--) {
+      const p = ps[i];
+      p.vy += 500 * dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.life -= dt;
+      if (p.life <= 0) ps.splice(i, 1);
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Обновление
+  // ------------------------------------------------------------------
+
+  update(dt, input) {
+    this.time += dt;
+    this.biome.tick(dt);
+    if (this.#prevBiome) {
+      this.#prevBiome.tick(dt);
+      this.#transT += dt;
+      if (this.#transT >= World.FADE_TIME) this.#prevBiome = null;
+    }
+    this.#shake = Math.max(0, this.#shake - dt);
+
+    this.player.update(dt, input);
+
+    // смена локации
+    if (this.distance >= this.#nextBiomeAt) {
+      this.#nextBiomeAt += CONFIG.TRANSITION_EVERY;
+      this.#nextBiome();
+    }
+
+    // после смерти генератор молчит: на экране ничего не появляется
+    if (!this.player.isDown) this.#generate();
+
+    for (const o of this.#obstacles) o.update(dt);
+    for (const e of this.#enemies) e.update(dt);
+    for (const it of this.#items) it.update(dt);
+    for (const p of this.#projectiles) p.update(dt);
+
+    this.#collisions();
+
+    // очистка
+    const cull = this.camera.x - 90;
+    this.#obstacles = this.#obstacles.filter((e) => !e.isDead && e.x + e.w > cull);
+    this.#enemies = this.#enemies.filter((e) => !e.isDead && e.x + e.w > cull);
+    this.#items = this.#items.filter((e) => !e.isDead && e.x + e.w > cull);
+    this.#projectiles = this.#projectiles.filter((e) => !e.isDead && e.x + e.w > cull);
+    this.#pits = this.#pits.filter((e) => !e.isDead);
+
+    this.#updateParticles(dt);
+    this.#updateCamera(dt);
+  }
+
+  #collisions() {
+    const player = this.player;
+    const hb = player.hitbox;
+    const feet = player.y + player.h;
+
+    const check = (e) => {
+      if (e.isDead) return;
+      if (e.collectible) {
+        if (rectsOverlap(hb, e.hitbox)) {
+          e.onCollect(player);
+          e.kill();
+          this.spawnParticles(e.x + e.w / 2, e.y + e.h / 2, '#ffe9a8', 4, -40);
+        }
+        return;
+      }
+      if (!e.damageOnTouch) return;
+      if (!rectsOverlap(hb, e.hitbox)) return;
+      if (player.invulnerable || player.isDown) return;
+
+      // прыжок на врага
+      if (e.stompable && player.vy > 0 && feet - e.y < 14) {
+        e.onStomp(player);
+        player.bounce();
+        return;
+      }
+      const hit = player.takeDamage(1);
+      if (hit) e.onHit(player);
+    };
+
+    for (const e of this.#obstacles) check(e);
+    for (const e of this.#enemies) check(e);
+    for (const e of this.#projectiles) check(e);
+    for (const e of this.#items) check(e);
+  }
+
+  #updateCamera(dt) {
+    const targetX = this.player.x - 62;
+    // после смерти камера замирает (труп лежит на земле — мир не «улетает»)
+    const targetY = this.player.isDown
+      ? 0
+      : Math.max(0, (this.player.y + this.player.h - CONFIG.GROUND_Y) - 36);
+    const k = Math.min(1, dt * 9);
+    this.camera.x += (targetX - this.camera.x) * k;
+    this.camera.y += (targetY - this.camera.y) * k;
+    if (this.#shake > 0) {
+      this.camera.x += (Math.random() - 0.5) * 3;
+      this.camera.y += (Math.random() - 0.5) * 3;
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Отрисовка
+  // ------------------------------------------------------------------
+
+  draw(ctx) {
+    const cam = this.camera;
+    const prev = this.#prevBiome;
+    // плавный кроссфейд старой и новой локации (smoothstep)
+    let fade = 1;
+    if (prev) {
+      const t = clamp(this.#transT / World.FADE_TIME, 0, 1);
+      fade = t * t * (3 - 2 * t);
+    }
+
+    if (prev) {
+      prev.drawBackground(ctx, cam);
+      this.drawGround(ctx, cam, prev);
+      ctx.globalAlpha = fade;
+    }
+    this.biome.drawBackground(ctx, cam);
+    this.drawGround(ctx, cam, this.biome);
+    ctx.globalAlpha = 1;
+
+    for (const it of this.#items) it.draw(ctx, cam);
+    for (const o of this.#obstacles) o.draw(ctx, cam);
+    for (const e of this.#enemies) e.draw(ctx, cam);
+    for (const p of this.#projectiles) p.draw(ctx, cam);
+
+    this.player.draw(ctx, cam);
+    this.#drawParticles(ctx, cam);
+
+    if (prev) {
+      prev.drawForeground(ctx, cam);
+      ctx.globalAlpha = fade;
+    }
+    this.biome.drawForeground(ctx, cam);
+    ctx.globalAlpha = 1;
+  }
+
+  /** Отрисовка земли с пропуском ям (ямы дорисовывают себя поверх). */
+  drawGround(ctx, cam, biome = this.biome) {
+    const S = CONFIG.SCALE;
+    const W = CONFIG.WIDTH;
+    const topH = 4 * S;
+    const gy = CONFIG.GROUND_Y;
+
+    ctx.fillStyle = biome.groundLine;
+    ctx.fillRect(0, gy, W, S);
+    ctx.fillStyle = biome.groundTop;
+    ctx.fillRect(0, gy + S, W, topH - S);
+    ctx.fillStyle = biome.groundDirt;
+    ctx.fillRect(0, gy + topH, W, CONFIG.HEIGHT);
+
+    // крапинки грунта (параллакс к земле)
+    ctx.fillStyle = biome.groundShade;
+    const off1 = (cam.x * 1.0) % 26;
+    for (let x = -off1; x < W + 26; x += 26) {
+      ctx.fillRect(Math.round(x) + 4, gy + topH + 4, 7, 3);
+      ctx.fillRect(Math.round(x) + 14, gy + topH + 11, 4, 2);
+    }
+  }
+
+  #drawParticles(ctx, cam) {
+    for (const p of this.#particles) {
+      ctx.globalAlpha = clamp(p.life * 3, 0, 1);
+      ctx.fillStyle = p.color;
+      const S = CONFIG.SCALE;
+      ctx.fillRect(Math.round(p.x - cam.x), Math.round(p.y - cam.y), p.size * S, p.size * S);
+    }
+    ctx.globalAlpha = 1;
+  }
+}
+
+</script>
+
+  <!-- 8. Интерфейс -->
+  <script>
+/* ==== js/ui/PauseButton.js ==== */
+/**
+ * PauseButton — кнопка паузы и динамика в правом верхнем углу.
+ * Зоны касаний инкапсулированы здесь; HUD рисуется отдельно.
+ */
+class PauseButton {
+  static ZONES = {
+    pause: { x: CONFIG.WIDTH - 46, y: 4, w: 20, h: 20 },
+    mute: { x: CONFIG.WIDTH - 22, y: 4, w: 18, h: 20 },
+  };
+
+  /** @returns {'pause'|'mute'|null} какая зона попала под палец. */
+  static hit(x, y) {
+    for (const [name, z] of Object.entries(PauseButton.ZONES)) {
+      if (x >= z.x && x <= z.x + z.w && y >= z.y && y <= z.y + z.h) return name;
+    }
+    return null;
+  }
+
+  static draw(ctx, paused, muted) {
+    const p = PauseButton.ZONES.pause;
+    // подложка
+    ctx.fillStyle = 'rgba(10,8,16,0.55)';
+    ctx.fillRect(p.x - 2, p.y - 2, p.w + 4, p.h + 4);
+    ctx.fillStyle = '#f2e2b0';
+    if (paused) {
+      // треугольник «play»
+      for (let i = 0; i < 5; i++) {
+        ctx.fillRect(p.x + 7, p.y + 4 + i * 2, 2 + i * 2, 2);
+      }
+    } else {
+      // две полоски «pause»
+      ctx.fillRect(p.x + 5, p.y + 4, 4, 12);
+      ctx.fillRect(p.x + 12, p.y + 4, 4, 12);
+    }
+
+    const m = PauseButton.ZONES.mute;
+    ctx.fillStyle = 'rgba(10,8,16,0.55)';
+    ctx.fillRect(m.x - 2, m.y - 2, m.w + 4, m.h + 4);
+    ctx.fillStyle = muted ? '#8a8494' : '#f2e2b0';
+    // динамик
+    ctx.fillRect(m.x + 3, m.y + 8, 3, 4);
+    ctx.fillRect(m.x + 6, m.y + 6, 2, 8);
+    if (muted) {
+      // перечёркнут
+      ctx.fillRect(m.x + 10, m.y + 6, 2, 2);
+      ctx.fillRect(m.x + 12, m.y + 8, 2, 2);
+      ctx.fillRect(m.x + 10, m.y + 10, 2, 2);
+      ctx.fillRect(m.x + 8, m.y + 12, 2, 2);
+    } else {
+      // волны
+      ctx.fillRect(m.x + 10, m.y + 6, 2, 6);
+      ctx.fillRect(m.x + 13, m.y + 4, 2, 10);
+    }
+  }
+}
+
+</script>
+  <script>
+/* ==== js/ui/TouchControls.js ==== */
+/**
+ * TouchControls — невидимые тач-зоны управления (паттерн Facade).
+ *
+ * Кнопки на экране НЕ рисуются: управление на десктопе — клавиатурой,
+ * на сенсорных устройствах — тапами по зонам (правая половина — прыжок,
+ * левая нижняя четверть — скольжение). Мультитач поддержан:
+ * у каждого пальца своя зона.
+ */
+class TouchControls {
+  #releases = new Map(); // pointerId -> функция отпускания
+  #canvas;
+
+  constructor(canvas, input) {
+    this.#canvas = canvas;
+    this.input = input;
+
+    canvas.addEventListener('pointerdown', (e) => this.#down(e), { passive: false });
+    window.addEventListener('pointerup', (e) => this.#up(e));
+    window.addEventListener('pointercancel', (e) => this.#up(e));
+  }
+
+  /** Преобразование координат события в логические пиксели канваса. */
+  #toLogical(e) {
+    const rect = this.#canvas.getBoundingClientRect();
+    return {
+      x: (e.clientX - rect.left) * (CONFIG.WIDTH / rect.width),
+      y: (e.clientY - rect.top) * (CONFIG.HEIGHT / rect.height),
+    };
+  }
+
+  #down(e) {
+    e.preventDefault();
+    const p = this.#toLogical(e);
+    const zone = PauseButton.hit(p.x, p.y);
+    if (zone === 'pause') { events.emit('ui:pause'); return; }
+    if (zone === 'mute') { events.emit('audio:toggle'); return; }
+
+    // невидимые зоны: правая половина — прыжок, левый низ — скольжение
+    let action = null;
+    if (p.y > CONFIG.HEIGHT * 0.34 && p.x > CONFIG.WIDTH * 0.5) action = 'jump';
+    else if (p.y > CONFIG.HEIGHT * 0.5 && p.x <= CONFIG.WIDTH * 0.5) action = 'slide';
+
+    if (action) {
+      const release = this.input.bindPointer(e.pointerId, action);
+      this.#releases.set(e.pointerId, release);
+    }
+  }
+
+  #up(e) {
+    const release = this.#releases.get(e.pointerId);
+    if (release) {
+      release();
+      this.#releases.delete(e.pointerId);
+    }
+  }
+}
+
+</script>
+  <script>
+/* ==== js/ui/HUD.js ==== */
+/**
+ * HUD — heads-up display: жизни, очки, метры, название локации,
+ * всплывающие сообщения. Подписан на события мира (Observer):
+ * сама не лезет в World за «кнопками», только читает состояние.
+ */
+class HUD {
+  #message = '';
+  #messageSub = '';
+  #messageTimer = 0;
+  #flash = 0;
+
+  constructor() {
+    events.on('biome:changed', ({ biome, loop }) => {
+      this.#message = biome.name;
+      this.#messageSub = loop > 0 ? 'КРУГ ' + (loop + 1) : '';
+      this.#messageTimer = 2.2;
+    });
+    events.on('player:hurt', () => { this.#flash = 0.25; });
+  }
+
+  update(dt) {
+    this.#messageTimer = Math.max(0, this.#messageTimer - dt);
+    this.#flash = Math.max(0, this.#flash - dt);
+  }
+
+  draw(ctx, world) {
+    const W = CONFIG.WIDTH;
+
+    // верхняя панель
+    ctx.fillStyle = 'rgba(10,8,16,0.45)';
+    ctx.fillRect(0, 0, W, 22);
+
+    // жизни
+    for (let i = 0; i < world.player.lives; i++) {
+      this.drawHeart(ctx, 6 + i * 12, 6);
+    }
+
+    // очки и метры
+    PixelFont.draw(ctx, 'ОЧКИ ' + world.score, W / 2, 4, { align: 'center', shadow: '#141220' });
+    PixelFont.draw(ctx, world.distance + ' М', W / 2, 14, { align: 'center', color: '#c9c2ad', shadow: '#141220' });
+
+    // скорость/сложность — тонкая полоска справа
+    const diffW = 40;
+    ctx.fillStyle = 'rgba(10,8,16,0.5)';
+    ctx.fillRect(W - diffW - 52, 8, diffW, 5);
+    ctx.fillStyle = '#c9832e';
+    ctx.fillRect(W - diffW - 52, 8, Math.round(diffW * world.difficulty), 5);
+
+    // красная вспышка при уроне
+    if (this.#flash > 0) {
+      ctx.fillStyle = 'rgba(176,48,39,' + (this.#flash * 0.9) + ')';
+      ctx.fillRect(0, 0, W, CONFIG.HEIGHT);
+    }
+
+    // сообщение о новой локации
+    if (this.#messageTimer > 0) {
+      const t = this.#messageTimer;
+      const alpha = clamp(t > 1.9 ? (2.2 - t) * 3 : Math.min(1, t), 0, 1);
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = 'rgba(10,8,16,0.6)';
+      ctx.fillRect(0, 70, W, 40);
+      PixelFont.draw(ctx, this.#message, W / 2, 78, { align: 'center', scale: 3, color: '#f2e2b0', shadow: '#141220' });
+      if (this.#messageSub) {
+        PixelFont.draw(ctx, this.#messageSub, W / 2, 102, { align: 'center', color: '#c9832e', shadow: '#141220' });
+      }
+      ctx.globalAlpha = 1;
+    }
+  }
+
+  /** Нарисовать пиксельное сердечко жизни. */
+  drawHeart(ctx, x, y) {
+    ctx.fillStyle = '#5a1f1c';
+    ctx.fillRect(x, y, 9, 8);
+    ctx.fillStyle = '#b03027';
+    ctx.fillRect(x + 1, y + 1, 3, 2);
+    ctx.fillRect(x + 5, y + 1, 3, 2);
+    ctx.fillRect(x + 1, y + 3, 7, 2);
+    ctx.fillRect(x + 2, y + 5, 5, 1);
+    ctx.fillRect(x + 3, y + 6, 3, 1);
+  }
+}
+
+</script>
+
+  <!-- 9. Игра -->
+  <script>
+/* ==== js/game/Game.js ==== */
+/**
+ * Game — ядро игры и конечный автомат состояний (паттерн «Состояние»).
+ *
+ * Состояния: MenuState → PlayState ⇄ PauseState, PlayState → OverState.
+ * Каждое состояние само решает, как обновляться и что рисовать.
+ * Game инкапсулирует цикл, «звуковую проводку» событий и рекорд.
+ */
+class Game {
+  #lastTs = 0;
+  #best = 0;
+
+  constructor(canvas, input) {
+    this.canvas = canvas;
+    this.ctx = canvas.getContext('2d');
+    this.ctx.imageSmoothingEnabled = false;
+    this.input = input;
+
+    this.world = new World(input);
+    this.hud = new HUD();
+    this.touch = new TouchControls(canvas, input);
+
+    this.#best = Game.loadBest();
+    this.states = {
+      menu: new MenuState(this),
+      play: new PlayState(this),
+      pause: new PauseState(this),
+      over: new OverState(this),
+      victory: new VictoryState(this),
+    };
+    this.state = this.states.menu;
+
+    this.#bindEvents();
+    this.state.enter();
+  }
+
+  get best() { return this.#best; }
+  get finalScore() { return this.world.score + this.world.distance; }
+
+  static loadBest() {
+    try { return parseInt(localStorage.getItem('jungleRunBest') || '0', 10) || 0; } catch (e) { return 0; }
+  }
+
+  saveBest(v) {
+    this.#best = Math.max(this.#best, v);
+    try { localStorage.setItem('jungleRunBest', String(this.#best)); } catch (e) { /* нет хранилища — не беда */ }
+  }
+
+  #bindEvents() {
+    const audio = () => AudioManager.instance;
+
+    // --- звуковая «проводка»: события -> чиптюновые эффекты ---
+    events.on('player:jump', () => audio().play('jump'));
+    events.on('player:doubleJump', () => audio().play('doubleJump'));
+    events.on('player:slide', () => audio().play('slide'));
+    events.on('player:hurt', () => audio().play('hurt'));
+    events.on('player:fall', () => audio().play('fall'));
+    events.on('player:dead', () => audio().play('gameOver'));
+    events.on('enemy:stomped', () => audio().play('stomp'));
+    events.on('warrior:throw', () => audio().play('click'));
+    events.on('enemy:alert', () => audio().play('click'));
+    events.on('idol:collected', (p) => { if (!p || !p.silent) audio().play('coin'); });
+    events.on('heart:collected', () => audio().play('heart'));
+    events.on('biome:changed', ({ biome }) => {
+      audio().play('biome');
+      audio().playSong(biome.track);
+    });
+    events.on('audio:toggle', () => audio().toggleMute());
+    // победа: все три локации пройдены
+    events.on('victory', () => {
+      if (this.state === this.states.play) this.setState('victory');
+    });
+    events.on('ui:pause', () => {
+      if (this.state === this.states.play) this.setState('pause');
+      else if (this.state === this.states.pause) this.setState('play');
+    });
+
+    // тап по экрану двигает неигровые состояния
+    window.addEventListener('pointerdown', () => {
+      const s = this.state;
+      if (s === this.states.menu) this.startRun();
+      else if (s === this.states.pause) this.setState('play');
+      else if (s === this.states.over && s.canRetry()) this.startRun();
+      else if (s === this.states.victory && s.canRetry()) this.startRun();
+    });
+
+    // свернули окно — пауза
+    document.addEventListener('visibilitychange', () => {
+      if (document.hidden && this.state === this.states.play) this.setState('pause');
+    });
+  }
+
+  /** Начать/возобновить забег. */
+  startRun() {
+    this.world.reset();
+    AudioManager.instance.play('start');
+    events.emit('biome:changed', { biome: this.world.biome, loop: 0 });
+    this.setState('play');
+  }
+
+  setState(state) {
+    if (this.state && this.state.exit) this.state.exit();
+    this.state = typeof state === 'string' ? this.states[state] : state;
+    if (this.state && this.state.enter) this.state.enter();
+  }
+
+  /** Главный цикл (requestAnimationFrame). */
+  start() {
+    const frame = (ts) => {
+      const dt = clamp((ts - this.#lastTs) / 1000, 0, 0.05);
+      this.#lastTs = ts;
+
+      this.state.update(dt);
+      this.state.draw(this.ctx);
+      this.input.endFrame();
+
+      requestAnimationFrame(frame);
+    };
+    requestAnimationFrame(frame);
+  }
+}
+
+// ----------------------------------------------------------------------
+// Состояния (State pattern)
+// ----------------------------------------------------------------------
+
+/** Заставка: мир «дышит» на фоне, ждём тапа/пробела. */
+class MenuState {
+  constructor(game) { this.game = game; this.t = 0; }
+
+  enter() {
+    this.t = 0;
+    AudioManager.instance.playSong(this.game.world.biome.track);
+  }
+
+  update(dt) {
+    this.t += dt;
+    this.game.world.biome.tick(dt);
+    if (this.game.input.wasPressed('jump') || this.game.input.wasPressed('pause')) {
+      this.game.startRun();
+    }
+  }
+
+  draw(ctx) {
+    const cam = { x: this.t * 46, y: 0 };
+    const world = this.game.world;
+    world.biome.drawBackground(ctx, cam);
+    world.drawGround(ctx, cam);
+    world.biome.drawForeground(ctx, cam);
+
+    // затемнение под текст
+    ctx.fillStyle = 'rgba(10,8,16,0.45)';
+    ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+
+    const cx = CONFIG.WIDTH / 2;
+    PixelFont.draw(ctx, 'JUNGLE', cx, 44, { align: 'center', scale: 4, color: '#f2e2b0', shadow: '#141220' });
+    PixelFont.draw(ctx, 'RUN', cx, 76, { align: 'center', scale: 4, color: '#c9832e', shadow: '#141220' });
+
+    // мигающий призыв — единственная подпись под логотипом
+    if (Math.floor(this.t * 2) % 2 === 0) {
+      PixelFont.draw(ctx, 'НАЖМИ ЛЮБУЮ КНОПКУ ДЛЯ СТАРТА', cx, 122, {
+        align: 'center', color: '#f7f3e3', shadow: '#141220',
+      });
+    }
+
+    PauseButton.draw(ctx, false, AudioManager.instance.muted);
+  }
+}
+
+/** Игра идёт: мир обновляется, кнопки паркура на экране. */
+class PlayState {
+  constructor(game) { this.game = game; this.overTimer = 0; }
+
+  enter() { this.overTimer = 1.0; }
+
+  update(dt) {
+    const game = this.game;
+    game.world.update(dt, game.input);
+    game.hud.update(dt);
+
+    if (game.input.wasPressed('pause')) { game.setState('pause'); return; }
+
+    if (game.world.player.isDown) {
+      this.overTimer -= dt;
+      if (this.overTimer <= 0) {
+        game.saveBest(game.finalScore);
+        game.setState('over');
+      }
+    }
+  }
+
+  draw(ctx) {
+    const game = this.game;
+    game.world.draw(ctx);
+    game.hud.draw(ctx, game.world);
+    PauseButton.draw(ctx, false, AudioManager.instance.muted);
+  }
+}
+
+/** Пауза: мир заморожен. */
+class PauseState {
+  constructor(game) { this.game = game; }
+
+  update() {
+    if (this.game.input.wasPressed('pause') || this.game.input.wasPressed('jump')) {
+      this.game.setState('play');
+    }
+  }
+
+  draw(ctx) {
+    const game = this.game;
+    game.world.draw(ctx);
+    game.hud.draw(ctx, game.world);
+
+    ctx.fillStyle = 'rgba(10,8,16,0.65)';
+    ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+    PixelFont.draw(ctx, 'ПАУЗА', CONFIG.WIDTH / 2, 70, {
+      align: 'center', scale: 3, color: '#f2e2b0', shadow: '#141220',
+    });
+    PixelFont.draw(ctx, 'НАЖМИ ЧТОБЫ ПРОДОЛЖИТЬ', CONFIG.WIDTH / 2, 104, {
+      align: 'center', color: '#c9c2ad', shadow: '#141220',
+    });
+    PauseButton.draw(ctx, true, AudioManager.instance.muted);
+  }
+}
+
+/** Конец забега: итоги и рекорд. */
+class OverState {
+  constructor(game) { this.game = game; this.t = 0; }
+
+  enter() { this.t = 0; }
+
+  canRetry() { return this.t > 0.6; }
+
+  update(dt) { this.t += dt; }
+
+  draw(ctx) {
+    const game = this.game;
+    game.world.draw(ctx);
+
+    ctx.fillStyle = 'rgba(10,8,16,0.7)';
+    ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+
+    const cx = CONFIG.WIDTH / 2;
+    PixelFont.draw(ctx, 'ИГРА ОКОНЧЕНА', cx, 34, { align: 'center', scale: 3, color: '#b03027', shadow: '#141220' });
+    PixelFont.draw(ctx, 'ОЧКИ ' + game.finalScore, cx, 74, { align: 'center', color: '#f2e2b0', shadow: '#141220' });
+    PixelFont.draw(ctx, 'ДИСТАНЦИЯ ' + game.world.distance + ' М', cx, 88, { align: 'center', color: '#c9c2ad', shadow: '#141220' });
+    PixelFont.draw(ctx, 'РЕКОРД ' + game.best, cx, 102, { align: 'center', color: '#c9832e', shadow: '#141220' });
+
+    if (Math.floor(this.t * 2) % 2 === 0) {
+      PixelFont.draw(ctx, 'НАЖМИ ЧТОБЫ НАЧАТЬ СНАЧАЯ', cx, 130, { align: 'center', color: '#f7f3e3', shadow: '#141220' });
+    }
+  }
+}
+
+/** Победа: все три локации пройдены! Бриллиант и предложение сыграть ещё. */
+class VictoryState {
+  constructor(game) { this.game = game; this.t = 0; }
+
+  enter() {
+    this.t = 0;
+    this.game.saveBest(this.game.finalScore);
+    const audio = AudioManager.instance;
+    audio.stopSong();
+    audio.play('victory');
+  }
+
+  canRetry() { return this.t > 0.8; }
+
+  update(dt) {
+    this.t += dt;
+    if (this.canRetry() && (this.game.input.wasPressed('jump') || this.game.input.wasPressed('pause'))) {
+      this.game.startRun();
+    }
+  }
+
+  draw(ctx) {
+    const game = this.game;
+    const t = this.t;
+    game.world.draw(ctx);
+
+    ctx.fillStyle = 'rgba(10,8,16,0.62)';
+    ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+
+    const cx = CONFIG.WIDTH / 2;
+
+    // --- бриллиант: процедурный огранённый алмаз с бликом ---
+    const bob = Math.round(Math.sin(t * 2.2) * 3);
+    const dy = 20 + bob;
+    // корона (верх)
+    ctx.fillStyle = '#8fe8f0';
+    ctx.fillRect(cx - 10, dy, 20, 2);
+    ctx.fillStyle = '#5fd0e0';
+    ctx.fillRect(cx - 12, dy + 2, 24, 4);
+    ctx.fillStyle = '#3fb8d8';
+    ctx.fillRect(cx - 14, dy + 6, 28, 3);
+    // грани
+    ctx.fillStyle = '#c8f4f8';
+    ctx.fillRect(cx - 10, dy + 2, 5, 3);
+    ctx.fillRect(cx - 3, dy + 7, 4, 2);
+    ctx.fillStyle = '#2a90b8';
+    ctx.fillRect(cx + 5, dy + 3, 7, 5);
+    ctx.fillRect(cx + 8, dy + 7, 4, 2);
+    // низ-пирамида
+    ctx.fillStyle = '#3fb8d8';
+    ctx.fillRect(cx - 12, dy + 9, 24, 2);
+    ctx.fillStyle = '#2a90b8';
+    ctx.fillRect(cx - 8, dy + 11, 16, 3);
+    ctx.fillRect(cx - 4, dy + 14, 8, 3);
+    ctx.fillRect(cx - 2, dy + 17, 4, 2);
+    // переливающиеся блики
+    if (Math.floor(t * 3) % 2 === 0) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(cx - 12, dy + 1, 2, 2);
+      ctx.fillRect(cx + 10, dy + 8, 1, 1);
+    }
+
+    PixelFont.draw(ctx, 'ПОБЕДА', cx, 66, { align: 'center', scale: 4, color: '#f2e2b0', shadow: '#141220' });
+    PixelFont.draw(ctx, 'ВСЕ ЛОКАЦИИ ПРОЙДЕНЫ!', cx, 102, { align: 'center', color: '#8fe8f0', shadow: '#141220' });
+    PixelFont.draw(ctx, 'ОЧКИ ' + game.finalScore, cx, 118, { align: 'center', color: '#f2e2b0', shadow: '#141220' });
+    PixelFont.draw(ctx, 'РЕКОРД ' + game.best, cx, 132, { align: 'center', color: '#c9832e', shadow: '#141220' });
+
+    if (Math.floor(this.t * 2) % 2 === 0) {
+      PixelFont.draw(ctx, 'НАЖМИ ЧТОБЫ СЫГРАТЬ ЕЩЁ', cx, 156, { align: 'center', color: '#f7f3e3', shadow: '#141220' });
+    }
+  }
+}
+
+</script>
+  <script>
+/* ==== js/main.js ==== */
+/**
+ * main.js — точка входа: собирает всё вместе и запускает цикл.
+ * Здесь нет логики игры — только «сборка» объектов (composition root).
+ */
+(function () {
+  const canvas = document.getElementById('game');
+  const input = new Input();
+  const game = new Game(canvas, input);
+
+  // для отладки и headless-тестов
+  window.JungleRun = game;
+
+  // запрещаем контекстное меню и «pull-to-refresh» на канвасе
+  canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+  canvas.addEventListener('pointerdown', (e) => e.preventDefault(), { passive: false });
+
+  game.start();
+})();
+
+</script>
+</body>
+</html>
