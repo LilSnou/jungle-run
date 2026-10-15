@@ -1,14 +1,15 @@
 /**
- * Spikes — шипы на земле: их надо перепрыгнуть.
- * Рисуются процедурно (пиксельные треугольники), хитбокс уже рисунка.
+ * Spikes — каменные шипы храма на полную «грудь» героя (12px):
+ * их надо перепрыгнуть. Рисуются процедурно (пиксельные треугольники),
+ * хитбокс уже рисунка.
  */
 class Spikes extends Obstacle {
   constructor(x, width = 16) {
-    super(x, CONFIG.GROUND_Y - 8, width, 8);
+    super(x, CONFIG.GROUND_Y - 12, width, 12);
   }
 
   get hitbox() {
-    return { x: this.x + 3, y: this.y + 2, w: this.w - 6, h: this.h - 2 };
+    return { x: this.x + 3, y: this.y + 5, w: this.w - 6, h: this.h - 5 };
   }
 
   draw(ctx, cam) {
@@ -20,13 +21,15 @@ class Spikes extends Obstacle {
     // каменная подложка
     ctx.fillStyle = '#3a3f4a';
     ctx.fillRect(x0, yb - S, this.w * S, S);
+    ctx.fillStyle = '#565b66';
+    ctx.fillRect(x0, yb - 2 * S, this.w * S, S);
 
     for (let i = 0; i < spikes; i++) {
       const cx = x0 + i * 8 * S + 4 * S;
-      for (let k = 0; k < 4; k++) {
-        ctx.fillStyle = k === 0 ? '#e8edf5' : '#9aa3ad';
+      for (let k = 0; k < 5; k++) {
+        ctx.fillStyle = k === 0 ? '#e8edf5' : (k === 1 ? '#c2c9d4' : '#9aa3ad');
         const w = (k + 1) * 2 * S;
-        ctx.fillRect(cx - w / 2, yb - (4 - k) * 2 * S, w, 2 * S);
+        ctx.fillRect(cx - w / 2, yb - (6 - k) * 2 * S, w, 2 * S);
       }
     }
   }

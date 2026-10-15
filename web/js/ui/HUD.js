@@ -12,7 +12,7 @@ class HUD {
   constructor() {
     events.on('biome:changed', ({ biome, loop }) => {
       this.#message = biome.name;
-      this.#messageSub = loop > 0 ? 'LOOP ' + (loop + 1) : '';
+      this.#messageSub = loop > 0 ? 'КРУГ ' + (loop + 1) : '';
       this.#messageTimer = 2.2;
     });
     events.on('player:hurt', () => { this.#flash = 0.25; });
@@ -36,8 +36,8 @@ class HUD {
     }
 
     // очки и метры
-    PixelFont.draw(ctx, 'SCORE ' + world.score, W / 2, 4, { align: 'center', shadow: '#141220' });
-    PixelFont.draw(ctx, world.distance + ' M', W / 2, 14, { align: 'center', color: '#c9c2ad', shadow: '#141220' });
+    PixelFont.draw(ctx, 'ОЧКИ ' + world.score, W / 2, 4, { align: 'center', shadow: '#141220' });
+    PixelFont.draw(ctx, world.distance + ' М', W / 2, 14, { align: 'center', color: '#c9c2ad', shadow: '#141220' });
 
     // скорость/сложность — тонкая полоска справа
     const diffW = 40;

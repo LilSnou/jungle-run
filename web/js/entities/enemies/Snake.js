@@ -1,12 +1,13 @@
 /**
- * Snake — змея, ползающая по земле.
- * Побеждается прыжком сверху (stomp); касание сбоком — урон.
+ * Snake — кобра, приподнявшаяся над землёй: теперь её высота сопоставима
+ * с героем (13px против 16px). Побеждается прыжком сверху (stomp);
+ * касание сбоком — урон.
  */
 class Snake extends Enemy {
   static SLITHER = 26; // px/с — дополнительное приближение к игроку
 
   constructor(x) {
-    super(x, CONFIG.GROUND_Y - 6, 12, 6);
+    super(x, CONFIG.GROUND_Y - 13, 10, 13);
   }
 
   update(dt) {
@@ -16,6 +17,6 @@ class Snake extends Enemy {
   }
 
   draw(ctx, cam) {
-    this.drawSprite(ctx, cam, this.frameBy(0.16, 2, 'snake_'), -1, -1, true);
+    this.drawSprite(ctx, cam, this.frameBy(0.5, 2, 'snake_'), -2, 0, true);
   }
 }

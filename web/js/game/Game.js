@@ -146,18 +146,15 @@ class MenuState {
     ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
 
     const cx = CONFIG.WIDTH / 2;
-    PixelFont.draw(ctx, 'JUNGLE', cx, 34, { align: 'center', scale: 4, color: '#f2e2b0', shadow: '#141220' });
-    PixelFont.draw(ctx, 'RUN', cx, 66, { align: 'center', scale: 4, color: '#c9832e', shadow: '#141220' });
-    PixelFont.draw(ctx, 'INDIANA PARKOUR', cx, 96, { align: 'center', color: '#8fbf6a', shadow: '#141220' });
+    PixelFont.draw(ctx, 'JUNGLE', cx, 44, { align: 'center', scale: 4, color: '#f2e2b0', shadow: '#141220' });
+    PixelFont.draw(ctx, 'RUN', cx, 76, { align: 'center', scale: 4, color: '#c9832e', shadow: '#141220' });
 
-    // мигающий призыв
+    // мигающий призыв — единственная подпись под логотипом
     if (Math.floor(this.t * 2) % 2 === 0) {
-      PixelFont.draw(ctx, 'TAP TO START', cx, 118, { align: 'center', color: '#f7f3e3', shadow: '#141220' });
+      PixelFont.draw(ctx, 'НАЖМИ ЛЮБУЮ КНОПКУ ДЛЯ СТАРТА', cx, 122, {
+        align: 'center', color: '#f7f3e3', shadow: '#141220',
+      });
     }
-
-    PixelFont.draw(ctx, 'RIGHT: JUMP  (TAP TWICE = 2X JUMP)', cx, 140, { align: 'center', color: '#c9c2ad', shadow: '#141220' });
-    PixelFont.draw(ctx, 'LEFT LOW: SLIDE   P: PAUSE   M: SOUND', cx, 150, { align: 'center', color: '#c9c2ad', shadow: '#141220' });
-    PixelFont.draw(ctx, 'BEST ' + this.game.best, cx, 166, { align: 'center', color: '#c9832e', shadow: '#141220' });
 
     PauseButton.draw(ctx, false, AudioManager.instance.muted);
   }
@@ -189,7 +186,6 @@ class PlayState {
     const game = this.game;
     game.world.draw(ctx);
     game.hud.draw(ctx, game.world);
-    game.touch.draw(ctx);
     PauseButton.draw(ctx, false, AudioManager.instance.muted);
   }
 }
@@ -211,10 +207,10 @@ class PauseState {
 
     ctx.fillStyle = 'rgba(10,8,16,0.65)';
     ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
-    PixelFont.draw(ctx, 'PAUSED', CONFIG.WIDTH / 2, 70, {
+    PixelFont.draw(ctx, 'ПАУЗА', CONFIG.WIDTH / 2, 70, {
       align: 'center', scale: 3, color: '#f2e2b0', shadow: '#141220',
     });
-    PixelFont.draw(ctx, 'TAP OR P TO RESUME', CONFIG.WIDTH / 2, 104, {
+    PixelFont.draw(ctx, 'НАЖМИ ЧТОБЫ ПРОДОЛЖИТЬ', CONFIG.WIDTH / 2, 104, {
       align: 'center', color: '#c9c2ad', shadow: '#141220',
     });
     PauseButton.draw(ctx, true, AudioManager.instance.muted);
@@ -239,13 +235,13 @@ class OverState {
     ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
 
     const cx = CONFIG.WIDTH / 2;
-    PixelFont.draw(ctx, 'GAME OVER', cx, 34, { align: 'center', scale: 3, color: '#b03027', shadow: '#141220' });
-    PixelFont.draw(ctx, 'SCORE ' + game.finalScore, cx, 74, { align: 'center', color: '#f2e2b0', shadow: '#141220' });
-    PixelFont.draw(ctx, 'DISTANCE ' + game.world.distance + ' M', cx, 88, { align: 'center', color: '#c9c2ad', shadow: '#141220' });
-    PixelFont.draw(ctx, 'BEST ' + game.best, cx, 102, { align: 'center', color: '#c9832e', shadow: '#141220' });
+    PixelFont.draw(ctx, 'ИГРА ОКОНЧЕНА', cx, 34, { align: 'center', scale: 3, color: '#b03027', shadow: '#141220' });
+    PixelFont.draw(ctx, 'ОЧКИ ' + game.finalScore, cx, 74, { align: 'center', color: '#f2e2b0', shadow: '#141220' });
+    PixelFont.draw(ctx, 'ДИСТАНЦИЯ ' + game.world.distance + ' М', cx, 88, { align: 'center', color: '#c9c2ad', shadow: '#141220' });
+    PixelFont.draw(ctx, 'РЕКОРД ' + game.best, cx, 102, { align: 'center', color: '#c9832e', shadow: '#141220' });
 
     if (Math.floor(this.t * 2) % 2 === 0) {
-      PixelFont.draw(ctx, 'TAP TO RETRY', cx, 130, { align: 'center', color: '#f7f3e3', shadow: '#141220' });
+      PixelFont.draw(ctx, 'НАЖМИ ЧТОБЫ НАЧАТЬ СНАЧАЯ', cx, 130, { align: 'center', color: '#f7f3e3', shadow: '#141220' });
     }
   }
 }

@@ -1,6 +1,7 @@
 /**
- * Jaguar — гепард/ягуар: мирно стоит, затем бросается на героя.
- * Побеждается прыжком на голову. Демонстрирует «триггерное» поведение.
+ * Jaguar — крупный ягуар в полный рост (12px — «на уровне» героя):
+ * мирно стоит, затем бросается на героя. Побеждается прыжком на голову.
+ * Демонстрирует «триггерное» поведение.
  */
 class Jaguar extends Enemy {
   static TRIGGER_RANGE = 150; // px — когда начинает гнаться
@@ -11,7 +12,7 @@ class Jaguar extends Enemy {
   #charging = false;
 
   constructor(x) {
-    super(x, CONFIG.GROUND_Y - 8, 13, 8);
+    super(x, CONFIG.GROUND_Y - 12, 13, 12);
   }
 
   update(dt) {
@@ -27,7 +28,7 @@ class Jaguar extends Enemy {
     if (this.#charging) {
       this.#chargeSpeed = Math.min(Jaguar.CHARGE_MAX, this.#chargeSpeed + Jaguar.CHARGE_ACCEL * dt);
       this.x -= this.#chargeSpeed * dt;
-      // Пыль под лапами
+      // пыль под лапами
       if (Math.floor(this.#chargeSpeed * dt * 10) % 3 === 0) {
         this.world.spawnParticles(this.x + 4, CONFIG.GROUND_Y - 1, '#c7b58d', 1, -20);
       }

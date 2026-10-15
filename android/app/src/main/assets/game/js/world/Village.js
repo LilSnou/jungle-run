@@ -1,6 +1,7 @@
 /**
- * Village — деревня аборигенов: закатное небо, хижины, тотемы,
- * дым костров. Здесь активнее воины с копьями.
+ * Village — деревня аборигенов: закатное небо, пальмы, хижины с дымом,
+ * резные тотемы, заборы, костры с анимированным пламенем.
+ * Здесь активнее воины с копьями и верёвки-ловушки.
  */
 class Village extends Biome {
   constructor(seed) {
@@ -8,21 +9,49 @@ class Village extends Biome {
     const rng = this.rng;
 
     this.clouds = [];
-    for (let i = 0; i < 4; i++) this.clouds.push({ x: i * 80 + rng() * 30, y: 14 + rng() * 20, w: 30 + rng() * 24 });
+    for (let i = 0; i < 5; i++) {
+      this.clouds.push({ x: i * 68 + rng() * 26, y: 12 + rng() * 22, w: 34 + rng() * 26, h: 5 + rng() * 3 });
+    }
+
+    this.farHills = [];
+    for (let i = 0; i < 6; i++) {
+      this.farHills.push({ x: i * 58 + rng() * 18, w: 48 + rng() * 28, h: 24 + rng() * 20 });
+    }
+
+    this.palms = [];
+    for (let i = 0; i < 6; i++) {
+      this.palms.push({ x: i * 54 + rng() * 20, h: 28 + rng() * 14, flip: rng() > 0.5 });
+    }
 
     this.huts = [];
-    for (let i = 0; i < 6; i++) this.huts.push({ x: i * 56 + rng() * 20, w: 22 + rng() * 10, h: 14 + rng() * 6 });
+    for (let i = 0; i < 6; i++) {
+      this.huts.push({ x: i * 60 + rng() * 22, w: 24 + rng() * 12, h: 15 + rng() * 7, smoke: rng() > 0.35 });
+    }
 
     this.totems = [];
-    for (let i = 0; i < 5; i++) this.totems.push({ x: i * 74 + rng() * 26, h: 22 + rng() * 14 });
+    for (let i = 0; i < 5; i++) {
+      this.totems.push({ x: i * 76 + rng() * 26, h: 24 + rng() * 14 });
+    }
+
+    this.fences = [];
+    for (let i = 0; i < 6; i++) {
+      this.fences.push({ x: i * 50 + rng() * 18, posts: 3 + Math.floor(rng() * 3) });
+    }
 
     this.fires = [];
-    for (let i = 0; i < 4; i++) this.fires.push({ x: i * 92 + rng() * 30 });
+    for (let i = 0; i < 4; i++) {
+      this.fires.push({ x: i * 92 + rng() * 30 });
+    }
+
+    this.grass = [];
+    for (let i = 0; i < 12; i++) {
+      this.grass.push({ x: i * 26 + rng() * 10, h: 5 + rng() * 6 });
+    }
   }
 
-  get name() { return 'VILLAGE'; }
+  get name() { return 'ДЕРЕВНЯ'; }
   get track() { return 'village'; }
-  get skyTop() { return '#7a3f8c'; }
+  get skyTop() { return '#6d3a86'; }
   get skyBottom() { return '#f7a04b'; }
   get groundTop() { return '#b98a4b'; }
   get groundDirt() { return '#8a5a2e'; }
@@ -30,82 +59,205 @@ class Village extends Biome {
   get groundLine() { return '#5c381b'; }
 
   drawBackground(ctx, cam) {
-    const W = CONFIG.WIDTH, H = CONFIG.HEIGHT;
+    const W = CONFIG.WIDTH, GY = CONFIG.GROUND_Y;
+    const t = this.time;
 
-    const g = ctx.createLinearGradient(0, 0, 0, CONFIG.GROUND_Y);
+    // --- закатный градиент в три слоя ---
+    const g = ctx.createLinearGradient(0, 0, 0, GY);
     g.addColorStop(0, this.skyTop);
+    g.addColorStop(0.55, '#c95e63');
     g.addColorStop(1, this.skyBottom);
     ctx.fillStyle = g;
-    ctx.fillRect(0, 0, W, H);
+    ctx.fillRect(0, 0, W, GY);
 
-    // заходящее солнце
-    const sunX = 190 - ((cam.x * 0.04) % 700);
+    // --- большое низкое солнце с градиентными кольцами ---
+    const sunX = 200 - ((cam.x * 0.035) % 700);
+    const sunY = GY - 42;
+    ctx.fillStyle = 'rgba(255,210,122,0.22)';
+    ctx.fillRect(sunX - 26, sunY - 26, 52, 52);
+    ctx.fillStyle = 'rgba(255,210,122,0.4)';
+    ctx.fillRect(sunX - 20, sunY - 20, 40, 40);
     ctx.fillStyle = '#ffd27a';
-    ctx.fillRect(sunX - 16, 66, 32, 32);
+    ctx.fillRect(sunX - 15, sunY - 15, 30, 30);
     ctx.fillStyle = '#ffe9a8';
-    ctx.fillRect(sunX - 10, 72, 20, 20);
+    ctx.fillRect(sunX - 9, sunY - 9, 18, 18);
 
-    // облака
-    Biome.parallax(ctx, cam, 0.08, 320, this.clouds, (ctx2, x, c) => {
-      ctx2.fillStyle = '#e8b98a';
-      ctx2.fillRect(x, c.y, c.w, 5);
-      ctx2.fillRect(x + 6, c.y - 3, c.w - 16, 4);
+    // --- вытянутые облачка в свете заката ---
+    Biome.parallax(ctx, cam, 0.07, 340, this.clouds, (ctx2, x, c) => {
+      ctx2.fillStyle = '#e8a06a';
+      ctx2.fillRect(x, c.y, c.w, c.h);
+      ctx2.fillStyle = '#f7c38a';
+      ctx2.fillRect(x + 4, c.y - 2, c.w - 12, 2);
+      ctx2.fillStyle = '#b96a52';
+      ctx2.fillRect(x + 2, c.y + c.h, c.w - 8, 1);
     });
 
-    // хижины
-    Biome.parallax(ctx, cam, 0.3, 336, this.huts, (ctx2, x, hut) => {
-      const base = CONFIG.GROUND_Y - 12;
+    // --- дальние силуэты холмов ---
+    Biome.parallax(ctx, cam, 0.12, 348, this.farHills, (ctx2, x, m) => {
+      const base = GY - 14;
+      for (let k = 0; k < m.h; k++) {
+        const w = Math.round(m.w * (1 - 0.92 * (k / m.h)));
+        ctx2.fillStyle = k > m.h * 0.5 ? '#5c3050' : '#6d3a5e';
+        ctx2.fillRect(x + Math.round((m.w - w) / 2), base - k, w, 1);
+      }
+    });
+
+    // --- пальмы ---
+    Biome.parallax(ctx, cam, 0.28, 324, this.palms, (ctx2, x, p) => {
+      const base = GY - 12;
+      const dir = p.flip ? -1 : 1;
+      ctx2.fillStyle = '#5c4526';
+      for (let k = 0; k < p.h; k++) {
+        ctx2.fillRect(x + Math.round(Math.sin(k / 12) * 4 * dir), base - k, 2, 1);
+      }
+      const topX = x + Math.round(Math.sin(p.h / 12) * 4 * dir);
+      ctx2.fillStyle = '#3f7a3a';
+      ctx2.fillRect(topX - 9 * dir, base - p.h - 2, 8 * dir * (dir > 0 ? 1 : -1) || 8, 2);
+      ctx2.fillRect(topX - 1, base - p.h - 2, 9, 2);
+      ctx2.fillRect(topX - 6, base - p.h - 4, 12, 2);
+      ctx2.fillStyle = '#4e9a3f';
+      ctx2.fillRect(topX - 4, base - p.h - 5, 8, 2);
+      // кокосы
+      ctx2.fillStyle = '#6b4a25';
+      ctx2.fillRect(topX - 2, base - p.h, 2, 2);
+    });
+
+    // --- хижины с соломенными крышами и дымом ---
+    Biome.parallax(ctx, cam, 0.4, 360, this.huts, (ctx2, x, hut) => {
+      const base = GY - 12;
+      // стены из бамбука
       ctx2.fillStyle = '#7a5230';
       ctx2.fillRect(x, base - hut.h, hut.w, hut.h);
       ctx2.fillStyle = '#c9a86a';
-      for (let i = 0; i < hut.w; i += 6) ctx2.fillRect(x + i, base - hut.h, 2, hut.h);
-      // соломенная крыша
+      for (let i = 1; i < hut.w; i += 5) ctx2.fillRect(x + i, base - hut.h, 2, hut.h);
+      ctx2.fillStyle = '#5c381b';
+      ctx2.fillRect(x, base - hut.h, hut.w, 2);
+      // крыша из соломы (ярусы)
       ctx2.fillStyle = '#d9b26a';
-      ctx2.fillRect(x - 3, base - hut.h - 8, hut.w + 6, 8);
-      ctx2.fillRect(x + 2, base - hut.h - 12, hut.w - 4, 5);
-      // дверь
+      ctx2.fillRect(x - 4, base - hut.h - 8, hut.w + 8, 8);
+      ctx2.fillStyle = '#c99a4b';
+      ctx2.fillRect(x - 1, base - hut.h - 12, hut.w + 2, 5);
+      ctx2.fillStyle = '#e8c882';
+      ctx2.fillRect(x + 2, base - hut.h - 13, hut.w - 4, 2);
+      // дверь и огонёк внутри
       ctx2.fillStyle = '#3d2a17';
-      ctx2.fillRect(x + hut.w / 2 - 3, base - 8, 6, 8);
-    });
-
-    // тотемные столбы
-    Biome.parallax(ctx, cam, 0.45, 370, this.totems, (ctx2, x, tot) => {
-      const base = CONFIG.GROUND_Y - 12;
-      ctx2.fillStyle = '#8a4b23';
-      ctx2.fillRect(x, base - tot.h, 8, tot.h);
-      ctx2.fillStyle = '#e0c53a';
-      ctx2.fillRect(x + 1, base - tot.h + 3, 2, 2);
-      ctx2.fillRect(x + 5, base - tot.h + 3, 2, 2);
-      ctx2.fillStyle = '#b03027';
-      ctx2.fillRect(x + 2, base - tot.h + 8, 4, 2);
-      ctx2.fillStyle = '#3fae4a';
-      ctx2.fillRect(x, base - tot.h - 4, 8, 4);
-    });
-
-    // дым костров
-    const t = this.time;
-    Biome.parallax(ctx, cam, 0.6, 460, this.fires, (ctx2, x, f) => {
-      const base = CONFIG.GROUND_Y - 12;
-      for (let i = 0; i < 4; i++) {
-        const rise = (t * 14 + i * 9) % 34;
-        ctx2.globalAlpha = Math.max(0, 0.5 - rise / 70);
-        ctx2.fillStyle = '#d8d3c8';
-        const drift = Math.sin(t * 2 + i) * 3;
-        ctx2.fillRect(Math.round(x + 2 + drift), Math.round(base - 8 - rise), 4, 4);
+      ctx2.fillRect(x + hut.w / 2 - 3, base - 9, 6, 9);
+      ctx2.fillStyle = '#e8a53a';
+      ctx2.fillRect(x + hut.w / 2 - 2, base - 6, 4, 3);
+      // дым
+      if (hut.smoke) {
+        for (let i = 0; i < 4; i++) {
+          const rise = (t * 12 + i * 10) % 40;
+          ctx2.globalAlpha = Math.max(0, 0.45 - rise / 90);
+          ctx2.fillStyle = '#d8d3c8';
+          const drift = Math.sin(t * 1.6 + i * 1.7) * 3;
+          ctx2.fillRect(Math.round(x + hut.w / 2 + drift), Math.round(base - hut.h - 14 - rise), 3, 3);
+        }
+        ctx2.globalAlpha = 1;
       }
-      ctx2.globalAlpha = 1;
+    });
+
+    // --- тотемные столбы с «лицами» ---
+    Biome.parallax(ctx, cam, 0.52, 380, this.totems, (ctx2, x, tot) => {
+      const base = GY - 12;
+      ctx2.fillStyle = '#8a4b23';
+      ctx2.fillRect(x, base - tot.h, 9, tot.h);
+      ctx2.fillStyle = '#6b3717';
+      ctx2.fillRect(x + 7, base - tot.h, 2, tot.h);
+      // три «лица»
+      const faces = 3;
+      for (let f = 0; f < faces; f++) {
+        const fy = base - tot.h + 3 + f * Math.floor((tot.h - 4) / faces);
+        ctx2.fillStyle = '#e0c53a';
+        ctx2.fillRect(x + 1, fy, 2, 2);
+        ctx2.fillRect(x + 5, fy, 2, 2);
+        ctx2.fillStyle = f % 2 ? '#b03027' : '#3fae4a';
+        ctx2.fillRect(x + 2, fy + 3, 4, 2);
+      }
+      // «волосы» из перьев
+      ctx2.fillStyle = '#b03027';
+      ctx2.fillRect(x - 1, base - tot.h - 4, 3, 4);
+      ctx2.fillStyle = '#e0c53a';
+      ctx2.fillRect(x + 3, base - tot.h - 5, 3, 5);
+      ctx2.fillStyle = '#3fae4a';
+      ctx2.fillRect(x + 7, base - tot.h - 4, 3, 4);
+    });
+
+    // --- заборы из кольев ---
+    Biome.parallax(ctx, cam, 0.66, 300, this.fences, (ctx2, x, f) => {
+      const base = GY - 10;
+      for (let i = 0; i < f.posts; i++) {
+        const px = x + i * 8;
+        ctx2.fillStyle = '#6b4a25';
+        ctx2.fillRect(px, base - 9, 2, 9);
+        ctx2.fillStyle = '#845c30';
+        ctx2.fillRect(px, base - 9, 1, 9);
+        ctx2.fillStyle = '#54381b';
+        ctx2.fillRect(px, base - 10, 2, 1);
+      }
+      ctx2.fillStyle = '#54381b';
+      ctx2.fillRect(x, base - 7, (f.posts - 1) * 8 + 2, 1);
+      ctx2.fillRect(x, base - 3, (f.posts - 1) * 8 + 2, 1);
+    });
+
+    // --- костры с пламенем и световым пятном ---
+    Biome.parallax(ctx, cam, 0.8, 460, this.fires, (ctx2, x, f) => {
+      const base = GY - 10;
+      // дрова
+      ctx2.fillStyle = '#5c381b';
+      ctx2.fillRect(x - 2, base - 3, 9, 2);
+      ctx2.fillStyle = '#6b4a25';
+      ctx2.fillRect(x, base - 4, 6, 2);
+      // пламя (3 языка, анимация)
+      const fl = Math.floor(t * 9 + x) % 3;
       ctx2.fillStyle = '#e07a2e';
-      ctx2.fillRect(x, base - 4, 6, 4);
+      ctx2.fillRect(x, base - 8 - fl, 6, 5 + fl);
+      ctx2.fillStyle = '#ffd27a';
+      ctx2.fillRect(x + 1, base - 7 - fl, 4, 4 + fl);
+      ctx2.fillStyle = '#fff3c8';
+      ctx2.fillRect(x + 2, base - 5, 2, 2);
+      // свет на земле
+      ctx2.fillStyle = 'rgba(255,180,90,0.18)';
+      ctx2.fillRect(x - 8, base, 22, 3);
     });
   }
 
   drawForeground(ctx, cam) {
-    // бегущие собаки/свиньи вдалеке? — оставим пальмовые листья по краям
     const t = this.time;
-    ctx.fillStyle = '#4a7a2f';
-    const sway = Math.sin(t * 1.7) * 3;
-    ctx.fillRect(6 + sway, 96, 30, 5);
-    ctx.fillRect(12 + sway, 102, 20, 4);
+
+    // колышущаяся трава переднего плана
+    const off = (cam.x * 1.2) % 312;
+    for (const gr of this.grass) {
+      let x = gr.x - off;
+      if (x < 0) x += 312;
+      for (let rep = -1; rep <= 1; rep++) {
+        const sx = Math.round(x + rep * 312);
+        if (sx < -10 || sx > CONFIG.WIDTH + 10) continue;
+        const sway = Math.round(Math.sin(t * 2.2 + gr.x) * 2);
+        ctx.fillStyle = '#8a6a2e';
+        ctx.fillRect(sx + sway, CONFIG.GROUND_Y - gr.h, 1, gr.h);
+        ctx.fillRect(sx + 3 + sway, CONFIG.GROUND_Y - gr.h + 2, 1, gr.h - 2);
+        ctx.fillStyle = '#a8843a';
+        ctx.fillRect(sx + 6 - sway, CONFIG.GROUND_Y - gr.h + 1, 1, gr.h - 1);
+      }
+    }
+
+    // светлячки сумерек
+    for (let i = 0; i < 5; i++) {
+      const x = ((i * 77 + t * 9 * (i % 2 ? -1 : 1)) % (CONFIG.WIDTH + 40)) - 20;
+      const y = 70 + Math.sin(t * 1.8 + i * 2.4) * 22 + i * 11;
+      if (Math.floor(t * 5 + i) % 3 !== 0) {
+        ctx.fillStyle = '#ffe98a';
+        ctx.fillRect(Math.round(x), Math.round(y), 2, 2);
+      }
+    }
+
+    // крупный лист пальмы, заглядывающий в кадр
+    ctx.fillStyle = '#2f5f2c';
+    ctx.fillRect(0, 92, 18, 4);
+    ctx.fillRect(6, 97, 12, 3);
+    ctx.fillRect(CONFIG.WIDTH - 16, 118, 16, 4);
+    ctx.fillRect(CONFIG.WIDTH - 10, 112, 10, 3);
   }
 
   getPattern(d) {
@@ -116,8 +268,8 @@ class Village extends Biome {
       P(3, { length: 145, spawns: [{ type: 'spikes', at: 60 }], items: Biome.idolArc(50, 5, 48) }),
       P(3, {
         length: 150,
-        spawns: [{ type: 'log', at: 70 }],
-        items: [{ type: 'idol', at: 62, alt: 13 }, { type: 'idol', at: 76, alt: 13 }],
+        spawns: [{ type: 'rope', at: 70 }],
+        items: [{ type: 'idol', at: 60, alt: 0 }, { type: 'idol', at: 72, alt: 0 }, { type: 'idol', at: 84, alt: 0 }],
       }),
       P(3, (dd) => ({
         length: 155,
@@ -128,6 +280,11 @@ class Village extends Biome {
       P(d > 0.15 ? 2 : 0, { length: 150, spawns: [{ type: 'snake', at: 95 }], items: [] }),
       P(d > 0.3 ? 2 : 0, {
         length: 195, spawns: [{ type: 'warrior', at: 90 }, { type: 'spikes', at: 155 }], items: [],
+      }),
+      P(d > 0.2 ? 2 : 0, {
+        length: 205,
+        spawns: [{ type: 'rope', at: 55 }, { type: 'rope', at: 84 }],   // длинное скольжение
+        items: [{ type: 'idol', at: 52, alt: 0 }, { type: 'idol', at: 70, alt: 0 }, { type: 'idol', at: 88, alt: 0 }],
       }),
       P(d > 0.35 ? 2 : 0, (dd) => ({
         length: 200,

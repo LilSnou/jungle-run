@@ -9,6 +9,9 @@ class Obstacle extends Entity {
   get damageOnTouch() { return true; }
   get stompable() { return false; }
 
+  /** Маркер «я препятствие» — удобно для тестов и отладочной отрисовки. */
+  get isObstacle() { return true; }
+
   /** Препятствие «над головой» (под ним нельзя вставать, пока не проедет). */
   get isOverhead() { return false; }
 

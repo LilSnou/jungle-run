@@ -26,6 +26,9 @@ class ObstacleFactory {
     switch (type) {
       case 'spikes': return new Spikes(x, opts.w || 16);
       case 'log': return new LowLog(x);
+      case 'vine': return new Vine(x);
+      case 'rope': return new RopeTrap(x);
+      case 'beam': return new StoneBeam(x);
       case 'statue': return new Statue(x);
       case 'pit': return new Pit(x, opts.w || 36);
       default: return null;

@@ -20,6 +20,7 @@ class World {
   #rng = makeRandom(1337);
   #shake = 0;
   #startX = 60;
+  #biomeStartDist = 0;
 
   constructor(input) {
     this.input = input;
@@ -49,6 +50,7 @@ class World {
     this.#biomeIndex = 0;
     this.#loop = 0;
     this.#nextBiomeAt = CONFIG.TRANSITION_EVERY;
+    this.#biomeStartDist = 0;
     this.biome = new this.#biomeClasses[0](1337 + Math.floor(Math.random() * 1000));
     this.player.reset(60, CONFIG.GROUND_Y - Player.STAND_H);
     this.#startX = this.player.x;
@@ -64,27 +66,30 @@ class World {
   // Геттеры состояния
   // ------------------------------------------------------------------
 
-  /** Текущая скорость бега, px/с. */
-  get speed() {
-    const meters = this.distance;
-    const accel = Math.min(
-      CONFIG.RUN_MAX - CONFIG.RUN_START,
-      (meters / 100) * CONFIG.RUN_ACCEL + this.#loop * 6,
+  /**
+   * Прогресс внутри текущей локации 0..1: скорость и сложность растут
+   * к её концу, а на новой локации всё начинается заново.
+   */
+  get biomeProgress() {
+    return clamp(
+      (this.distance - this.#biomeStartDist) / CONFIG.TRANSITION_EVERY,
+      0, 1,
     );
-    return CONFIG.RUN_START + accel;
+  }
+
+  /** Текущая скорость бега, px/с (постепенный разгон внутри биома). */
+  get speed() {
+    const p = this.biomeProgress;
+    const accel = Math.pow(p, CONFIG.RUN_EASE) * (CONFIG.RUN_MAX - CONFIG.RUN_START);
+    return Math.min(CONFIG.RUN_MAX, CONFIG.RUN_START + this.#loop * 9 + accel);
   }
 
   /** Пройденное расстояние в метрах. */
   get distance() { return Math.max(0, Math.floor((this.player.x - this.#startX) / 16)); }
 
-  /** Сложность 0..1 — растёт с расстоянием и «петлями» локаций. */
+  /** Сложность 0..1 — растёт с прогрессом локации и «петлями». */
   get difficulty() {
-    const byDist = clamp(this.distance / 900, 0, 1) * 0.75;
-    const inBiome = clamp(
-      (this.distance - (this.#nextBiomeAt - CONFIG.TRANSITION_EVERY)) / CONFIG.TRANSITION_EVERY,
-      0, 1,
-    ) * 0.2;
-    return clamp(byDist + inBiome + this.#loop * 0.1, 0, 1);
+    return clamp(0.08 + this.#loop * 0.22 + this.biomeProgress * 0.85, 0, 1);
   }
 
   // ------------------------------------------------------------------
@@ -151,17 +156,46 @@ class World {
   #spawnPattern(pattern, x0) {
     for (const s of pattern.spawns || []) {
       if (s.type === 'pit') {
-        const pit = ObstacleFactory.create('pit', x0 + s.at, s);
-        this.addObstacle(pit);
-      } else if (['spikes', 'log', 'statue'].includes(s.type)) {
-        this.addObstacle(ObstacleFactory.create(s.type, x0 + s.at, s));
+        this.addObstacle(ObstacleFactory.create('pit', x0 + s.at, s));
       } else {
-        this.addEnemy(EnemyFactory.create(s.type, x0 + s.at, s));
+        const obstacle = ObstacleFactory.create(s.type, x0 + s.at, s);
+        if (obstacle) this.addObstacle(obstacle);
+        else this.addEnemy(EnemyFactory.create(s.type, x0 + s.at, s));
       }
     }
     for (const it of pattern.items || []) {
       const y = CONFIG.GROUND_Y - (it.alt || 30) - 8;
-      this.addItem(ItemFactory.create(it.type, x0 + it.at, y));
+      const item = ItemFactory.create(it.type, x0 + it.at, y);
+      if (item) this.addItem(item);
+    }
+    this.#fixItemPlacement();
+  }
+
+  /**
+   * Монетки и сердечки не должны оказаться ВНУТРИ препятствий:
+   * если предмет пересекается с препятствием — поднимаем его над ним.
+   */
+  #fixItemPlacement() {
+    for (const it of this.#items) {
+      if (it.isDead) continue;
+      let box = { x: it.x, y: it.baseY, w: it.w, h: it.h };
+      for (const o of this.#obstacles) {
+        if (o.isDead) continue;
+        if (o.isPit) {
+          // над ямой монетка должна быть хотя бы на уровне земли
+          const overPit = box.x + box.w > o.x + 4 && box.x < o.x + o.w - 4;
+          if (overPit && box.y + box.h > CONFIG.GROUND_Y - 10) {
+            it.setBaseY(CONFIG.GROUND_Y - it.h - 14);
+            box = { x: it.x, y: it.baseY, w: it.w, h: it.h };
+          }
+          continue;
+        }
+        let guard = 0;
+        while (guard++ < 8 && rectsOverlap(box, { x: o.x, y: o.y, w: o.w, h: o.h })) {
+          it.setBaseY(it.baseY - 6);
+          box = { x: it.x, y: it.baseY, w: it.w, h: it.h };
+        }
+      }
     }
   }
 
@@ -180,6 +214,7 @@ class World {
     this.#biomeIndex = (this.#biomeIndex + 1) % this.#biomeClasses.length;
     if (this.#biomeIndex === 0) this.#loop++;
     this.biome = new this.#biomeClasses[this.#biomeIndex](1337 + this.#loop * 31 + this.#biomeIndex * 7);
+    this.#biomeStartDist = this.distance; // скорость и сложность стартуют заново
     // убираем «предыдущую» локацию впереди игрока
     this.#obstacles = this.#obstacles.filter((o) => o.x < this.player.x);
     this.#enemies = this.#enemies.filter((e) => e.x < this.player.x);

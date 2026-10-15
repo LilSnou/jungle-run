@@ -115,6 +115,16 @@ vm.runInContext(`
   events.on('enemy:stomped', () => { globalThis.__stomps = (globalThis.__stomps||0)+1; });
   events.on('player:dead', () => { globalThis.__deaths = (globalThis.__deaths||0)+1; });
   events.on('idol:collected', () => { globalThis.__idols = (globalThis.__idols||0)+1; });
+  // снимок скорости в момент смены локации: должна сбрасываться
+  events.on('biome:changed', (e) => {
+    if (!globalThis.__game) return;
+    globalThis.__speedAtBiome = globalThis.__speedAtBiome || [];
+    globalThis.__speedAtBiome.push({
+      loop: e.loop,
+      prog: globalThis.__game.world.biomeProgress,
+      speed: globalThis.__game.world.speed,
+    });
+  });
 `, sandbox);
 
 // ---------------------------------------------------------------------------
@@ -136,10 +146,11 @@ function ai(i) {
     if (!e.damageOnTouch && !e.isPit) continue;
     if (e.isPit) {
       if (dx > -18 && dx < 16) jumpNow = true;                     // яма: прыжок с кромки
-    } else if (e.y < CONFIG.GROUND_Y - 11) {
-      if (dx > -(e.w + p.w + 4) && dx < 42) slideNow = true;       // бревно / мышь
+    } else if (e.y < CONFIG.GROUND_Y - 11 && e.h <= 9) {
+      // низкие над головой: бревно/лиана/верёвка/балка/мышь/копьё
+      if (dx > -(e.w + p.w + 4) && dx < 42) slideNow = true;
     } else if (dx > 6 && dx < 30) {
-      jumpNow = true;                                              // шипы, статуя, враги, копьё
+      jumpNow = true;                                              // шипы, статуя, враги
     }
   }
   // падаем в яму — второй прыжок
@@ -169,6 +180,8 @@ game.input.press('jump');
 frames(5);
 game.input.release('jump');
 assert(game.state === game.states.play, 'play: тап по заставке стартует игру');
+assert(game.world.biomeProgress === 0, 'speed: в начале локации прогресс = 0');
+assert(game.world.speed === CONFIG.RUN_START, 'speed: в начале локации базовая скорость');
 
 // ===========================================================================
 // 3) Живая игра: ИИ играет ~25 секунд, собирает идолы, получает урон
@@ -210,10 +223,41 @@ const realTakeDamage = player.takeDamage.bind(player);
 const livesBefore = player.lives;
 player.takeDamage = () => false; // неуязвимость для длинного забега
 
-frames(24000, (i) => ai(i));
+let maxProg = 0;
+let maxSpeed = CONFIG.RUN_START;
+frames(24000, (i) => {
+  ai(i);
+  if (i % 30 === 0) {
+    maxProg = Math.max(maxProg, game.world.biomeProgress);
+    maxSpeed = Math.max(maxSpeed, game.world.speed);
+  }
+});
 assert(game.world.distance > 1500, 'long: долгий забег (' + game.world.distance + ' м)');
 assert(sandbox.__biomeChanges >= 4, 'biome: все локации сменяются (' + sandbox.__biomeChanges + ' смен)');
 assert(player.lives === livesBefore, 'godmode: за долгий забег урон не прошёл');
+assert(maxProg > 0.7, 'speed: прогресс локации доходит до её конца (' + maxProg.toFixed(2) + ')');
+assert(maxSpeed > CONFIG.RUN_START + 60, 'speed: внутри локации скорость растёт (до ' + Math.round(maxSpeed) + ')');
+
+// на каждой смене локации скорость возвращается к базовой
+const speedAtBiome = sandbox.__speedAtBiome || [];
+assert(speedAtBiome.length >= 3, 'speed: снимков скорости на смене локации (' + speedAtBiome.length + ')');
+assert(
+  speedAtBiome.every((s) => s.prog === 0 && Math.abs(s.speed - (CONFIG.RUN_START + s.loop * 9)) < 0.01),
+  'speed: на новой локации разгон начинается заново',
+);
+
+// монетки/сердечки не должны оказываться внутри препятствий
+const rectsOverlapFn = vm.runInContext('rectsOverlap', sandbox);
+let insideObstacle = 0;
+for (const e of game.world.entities) {
+  if (!e.collectible) continue;
+  const ib = { x: e.x, y: e.baseY ?? e.y, w: e.w, h: e.h };
+  for (const o of game.world.entities) {
+    if (!o.isObstacle || o.isPit) continue;
+    if (rectsOverlapFn(ib, o.hitbox)) insideObstacle++;
+  }
+}
+assert(insideObstacle === 0, 'items: монетки не внутри препятствий (' + insideObstacle + ')');
 
 player.takeDamage = realTakeDamage; // возвращаем смертность
 

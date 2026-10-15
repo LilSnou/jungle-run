@@ -17,6 +17,9 @@ class Item extends Entity {
   get time() { return this.#time; }
   get phase() { return this.#phase; }
 
+  /** Поднять/опустить точку парения (используется генератором уровня). */
+  setBaseY(v) { this.#baseY = v; this.y = v; }
+
   update(dt) {
     this.#time += dt;
     this.y = this.#baseY + Math.sin(this.#time * 3 + this.#phase) * 2;
