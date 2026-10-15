@@ -6,6 +6,9 @@
  * а фабрики создают конкретные объекты.
  */
 class World {
+  /** Длительность плавного перехода между локациями, с. */
+  static FADE_TIME = 1.8;
+
   #obstacles = [];
   #enemies = [];
   #items = [];
@@ -21,6 +24,9 @@ class World {
   #shake = 0;
   #startX = 60;
   #biomeStartDist = 0;
+  #prevBiome = null;   // предыдущая локация (для плавного кроссфейда)
+  #transT = 1;         // таймер перехода (1 = переход завершён)
+  #heartsThisBiome = 0;
 
   constructor(input) {
     this.input = input;
@@ -37,6 +43,8 @@ class World {
     events.on('enemy:stomped', () => { this.score += CONFIG.STOMP_SCORE; });
     events.on('player:fall', () => { this.#shake = 0.35; });
     events.on('player:hurt', () => { this.#shake = 0.3; });
+    // При смерти героя все объекты мира просто исчезают (без «улетания»).
+    events.on('player:dead', () => this.clearEntities());
   }
 
   /** Полный сброс мира (новая игра). */
@@ -51,6 +59,9 @@ class World {
     this.#loop = 0;
     this.#nextBiomeAt = CONFIG.TRANSITION_EVERY;
     this.#biomeStartDist = 0;
+    this.#prevBiome = null;
+    this.#transT = 1;
+    this.#heartsThisBiome = 0;
     this.biome = new this.#biomeClasses[0](1337 + Math.floor(Math.random() * 1000));
     this.player.reset(60, CONFIG.GROUND_Y - Player.STAND_H);
     this.#startX = this.player.x;
@@ -152,6 +163,16 @@ class World {
     return [...this.#obstacles, ...this.#enemies, ...this.#items, ...this.#projectiles];
   }
 
+  /** При смерти игрока всё живое в мире просто исчезает — без «улетания» вверх. */
+  clearEntities() {
+    this.#obstacles.length = 0;
+    this.#enemies.length = 0;
+    this.#items.length = 0;
+    this.#projectiles.length = 0;
+    this.#pits.length = 0;
+    this.#particles.length = 0;
+  }
+
   /** Создать сущности из «паттерна» биома. */
   #spawnPattern(pattern, x0) {
     for (const s of pattern.spawns || []) {
@@ -203,23 +224,55 @@ class World {
   #generate() {
     const ahead = this.player.x + CONFIG.WIDTH + 120;
     while (this.#spawnCursor < ahead) {
-      const pattern = this.biome.getPattern(this.difficulty);
+      const pattern = this.#withHeartGuarantee(this.biome.getPattern(this.difficulty));
       this.#spawnPattern(pattern, this.#spawnCursor);
+      if ((pattern.items || []).some((i) => i.type === 'heart')) this.#heartsThisBiome++;
       this.#spawnCursor += pattern.length + Math.floor(this.#rng() * 36);
     }
   }
 
+  /**
+   * Гарантия сердечек на каждой локации: как минимум одно (к ~30% пути),
+   * второе — с шансом на вторую половине. Недостающее подставляем сами.
+   */
+  #withHeartGuarantee(pattern) {
+    const p = this.biomeProgress;
+    if (this.#heartsThisBiome === 0 && p > 0.3) return this.#heartPattern();
+    if (this.#heartsThisBiome === 1 && p > 0.7 && this.#rng() < 0.5) return this.#heartPattern();
+    return pattern;
+  }
+
+  /** Паттерн с одним сердечком на уровне пояса (под прыжок-подбор). */
+  #heartPattern() {
+    return { length: 140, spawns: [], items: [{ type: 'heart', at: 60, alt: 34 }] };
+  }
+
   /** Смена локации. */
   #nextBiome() {
+    const prevLoop = this.#loop;
     this.#biomeIndex = (this.#biomeIndex + 1) % this.#biomeClasses.length;
     if (this.#biomeIndex === 0) this.#loop++;
+
+    // предыдущая локация остаётся на время плавного кроссфейда
+    this.#prevBiome = this.biome;
+    this.#transT = 0;
+
     this.biome = new this.#biomeClasses[this.#biomeIndex](1337 + this.#loop * 31 + this.#biomeIndex * 7);
     this.#biomeStartDist = this.distance; // скорость и сложность стартуют заново
+    this.#heartsThisBiome = 0;
     // убираем «предыдущую» локацию впереди игрока
     this.#obstacles = this.#obstacles.filter((o) => o.x < this.player.x);
     this.#enemies = this.#enemies.filter((e) => e.x < this.player.x);
     this.#items = this.#items.filter((i) => i.x < this.player.x);
+    // ямы впереди тоже принадлежали старой локации — иначе игрок
+    // проваливается под невидимую дыру (фикс бага перехода)
+    this.#pits = this.#pits.filter((p) => !p.isDead && p.x < this.player.x);
+    this.#projectiles.length = 0;
     events.emit('biome:changed', { biome: this.biome, loop: this.#loop });
+    // все три локации пройдены — победа!
+    if (prevLoop === 0 && this.#loop === 1) {
+      events.emit('victory', { score: this.score, distance: this.distance });
+    }
   }
 
   // ------------------------------------------------------------------
@@ -260,6 +313,11 @@ class World {
   update(dt, input) {
     this.time += dt;
     this.biome.tick(dt);
+    if (this.#prevBiome) {
+      this.#prevBiome.tick(dt);
+      this.#transT += dt;
+      if (this.#transT >= World.FADE_TIME) this.#prevBiome = null;
+    }
     this.#shake = Math.max(0, this.#shake - dt);
 
     this.player.update(dt, input);
@@ -270,7 +328,8 @@ class World {
       this.#nextBiome();
     }
 
-    this.#generate();
+    // после смерти генератор молчит: на экране ничего не появляется
+    if (!this.player.isDown) this.#generate();
 
     for (const o of this.#obstacles) o.update(dt);
     for (const e of this.#enemies) e.update(dt);
@@ -328,7 +387,10 @@ class World {
 
   #updateCamera(dt) {
     const targetX = this.player.x - 62;
-    const targetY = Math.max(0, (this.player.y + this.player.h - CONFIG.GROUND_Y) - 36);
+    // после смерти камера замирает (труп лежит на земле — мир не «улетает»)
+    const targetY = this.player.isDown
+      ? 0
+      : Math.max(0, (this.player.y + this.player.h - CONFIG.GROUND_Y) - 36);
     const k = Math.min(1, dt * 9);
     this.camera.x += (targetX - this.camera.x) * k;
     this.camera.y += (targetY - this.camera.y) * k;
@@ -344,8 +406,22 @@ class World {
 
   draw(ctx) {
     const cam = this.camera;
+    const prev = this.#prevBiome;
+    // плавный кроссфейд старой и новой локации (smoothstep)
+    let fade = 1;
+    if (prev) {
+      const t = clamp(this.#transT / World.FADE_TIME, 0, 1);
+      fade = t * t * (3 - 2 * t);
+    }
+
+    if (prev) {
+      prev.drawBackground(ctx, cam);
+      this.drawGround(ctx, cam, prev);
+      ctx.globalAlpha = fade;
+    }
     this.biome.drawBackground(ctx, cam);
-    this.drawGround(ctx, cam);
+    this.drawGround(ctx, cam, this.biome);
+    ctx.globalAlpha = 1;
 
     for (const it of this.#items) it.draw(ctx, cam);
     for (const o of this.#obstacles) o.draw(ctx, cam);
@@ -355,25 +431,30 @@ class World {
     this.player.draw(ctx, cam);
     this.#drawParticles(ctx, cam);
 
+    if (prev) {
+      prev.drawForeground(ctx, cam);
+      ctx.globalAlpha = fade;
+    }
     this.biome.drawForeground(ctx, cam);
+    ctx.globalAlpha = 1;
   }
 
   /** Отрисовка земли с пропуском ям (ямы дорисовывают себя поверх). */
-  drawGround(ctx, cam) {
+  drawGround(ctx, cam, biome = this.biome) {
     const S = CONFIG.SCALE;
     const W = CONFIG.WIDTH;
     const topH = 4 * S;
     const gy = CONFIG.GROUND_Y;
 
-    ctx.fillStyle = this.biome.groundLine;
+    ctx.fillStyle = biome.groundLine;
     ctx.fillRect(0, gy, W, S);
-    ctx.fillStyle = this.biome.groundTop;
+    ctx.fillStyle = biome.groundTop;
     ctx.fillRect(0, gy + S, W, topH - S);
-    ctx.fillStyle = this.biome.groundDirt;
+    ctx.fillStyle = biome.groundDirt;
     ctx.fillRect(0, gy + topH, W, CONFIG.HEIGHT);
 
     // крапинки грунта (параллакс к земле)
-    ctx.fillStyle = this.biome.groundShade;
+    ctx.fillStyle = biome.groundShade;
     const off1 = (cam.x * 1.0) % 26;
     for (let x = -off1; x < W + 26; x += 26) {
       ctx.fillRect(Math.round(x) + 4, gy + topH + 4, 7, 3);

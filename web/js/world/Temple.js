@@ -47,6 +47,18 @@ class Temple extends Biome {
 
     this.rubles = [];
     for (let i = 0; i < 10; i++) this.rubles.push({ x: i * 36 + rng() * 14, w: 5 + rng() * 11 });
+
+    // руны на стене (слабо мерцают)
+    this.runes = [];
+    for (let i = 0; i < 6; i++) {
+      this.runes.push({ x: i * 57 + rng() * 30, kind: Math.floor(rng() * 3) });
+    }
+
+    // черепа и камни у самой земли
+    this.skulls = [];
+    for (let i = 0; i < 4; i++) {
+      this.skulls.push({ x: i * 93 + rng() * 34, flip: rng() > 0.5 });
+    }
   }
 
   get name() { return 'ХРАМ'; }
@@ -100,7 +112,7 @@ class Temple extends Biome {
 
     // --- дальние силуэты пирамид со ступенями ---
     Biome.parallax(ctx, cam, 0.14, 390, this.farPyramids, (ctx2, x, p) => {
-      const base = GY - 12;
+      const base = GY + 3; // пирамиды стоят на земле
       for (let k = 0; k < p.h; k++) {
         const w = Math.round(p.w * (1 - 0.75 * (k / p.h)));
         ctx2.fillStyle = k > p.h * 0.55 ? '#211c38' : '#282243';
@@ -116,7 +128,7 @@ class Temple extends Biome {
 
     // --- ближние проработанные пирамиды ---
     Biome.parallax(ctx, cam, 0.3, 430, this.pyramids, (ctx2, x, p) => {
-      const base = GY - 10;
+      const base = GY + 2; // пирамиды стоят на земле
       // ступени
       for (let k = 0; k < p.h; k++) {
         const w = Math.round(p.w * (1 - 0.7 * (k / p.h)));
@@ -202,9 +214,30 @@ class Temple extends Biome {
       }
     });
 
+    // --- руны на камне стены (слабо мерцают) ---
+    Biome.parallax(ctx, cam, 0.55, 340, this.runes, (ctx2, x, r) => {
+      const my = wallY + 6;
+      const glow = 0.22 + 0.18 * Math.sin(t * 1.6 + r.x * 0.3);
+      ctx2.fillStyle = 'rgba(224,165,58,' + glow.toFixed(2) + ')';
+      if (r.kind === 0) {
+        ctx2.fillRect(x, my, 1, 8);
+        ctx2.fillRect(x - 2, my, 5, 1);
+        ctx2.fillRect(x - 2, my + 7, 5, 1);
+      } else if (r.kind === 1) {
+        ctx2.fillRect(x, my, 4, 1);
+        ctx2.fillRect(x + 1, my + 2, 2, 1);
+        ctx2.fillRect(x, my + 4, 4, 1);
+        ctx2.fillRect(x + 1, my + 6, 2, 1);
+      } else {
+        ctx2.fillRect(x, my, 1, 8);
+        ctx2.fillRect(x + 3, my, 1, 8);
+        ctx2.fillRect(x, my + 3, 4, 1);
+      }
+    });
+
     // --- обломки колонн ---
     Biome.parallax(ctx, cam, 0.68, 370, this.columns, (ctx2, x, c) => {
-      const base = GY - 18;
+      const base = GY + 2; // колонны стоят на земле
       ctx2.fillStyle = '#4a4e56';
       ctx2.fillRect(x, base - c.h, 8, c.h);
       ctx2.fillStyle = '#5a5f69';
@@ -269,6 +302,20 @@ class Temple extends Biome {
       ctx2.fillStyle = '#1f4f26';
       ctx2.fillRect(x + sway, Math.round(v.len * 0.5), 2, 2);
     });
+
+    // --- черепа и камни у земли ---
+    Biome.parallax(ctx, cam, 0.9, 330, this.skulls, (ctx2, x, s) => {
+      const base = GY + 2;
+      ctx2.fillStyle = '#c8c0a8';
+      ctx2.fillRect(x, base - 6, 6, 5);
+      ctx2.fillStyle = '#a8a08a';
+      ctx2.fillRect(x, base - 2, 6, 1);
+      ctx2.fillStyle = '#2a2444';
+      ctx2.fillRect(x + 1, base - 5, 1, 2);
+      ctx2.fillRect(x + 4, base - 5, 1, 2);
+      ctx2.fillStyle = '#4a4e56';
+      ctx2.fillRect(x + (s.flip ? -5 : 7), base - 2, 3, 2);
+    });
   }
 
   drawForeground(ctx, cam) {
@@ -280,6 +327,15 @@ class Temple extends Biome {
       const x = ((i * 53 + t * 6 * (i % 2 ? 1 : -1)) % (CONFIG.WIDTH + 30)) - 15;
       const y = 24 + Math.sin(t * 1.1 + i * 1.9) * 18 + i * 12;
       ctx.fillRect(Math.round(x), Math.round(y) % CONFIG.GROUND_Y, 1, 1);
+    }
+
+    // угольки, поднимающиеся от факелов
+    for (let i = 0; i < 8; i++) {
+      const rise = (t * 22 + i * 30) % (CONFIG.GROUND_Y + 10);
+      const x = (((i * 67 + Math.sin(t * 2 + i) * 14 - t * 6) % (CONFIG.WIDTH + 40)) + CONFIG.WIDTH + 40) % (CONFIG.WIDTH + 40) - 20;
+      const alpha = Math.max(0, 0.8 - rise / (CONFIG.GROUND_Y * 0.8));
+      ctx.fillStyle = 'rgba(255,170,80,' + alpha.toFixed(2) + ')';
+      ctx.fillRect(Math.round(x), Math.round(CONFIG.GROUND_Y - rise), 1, 1);
     }
 
     // падающие листья
@@ -312,6 +368,7 @@ class Temple extends Biome {
   getPattern(d) {
     const rng = this.rng;
     const P = (weight, value) => ({ weight, value });
+    // Храм: шипы, статуи, балки, ямы, воины и мыши (свой набор — своя музыка, свои мобы)
     const table = [
       P(2.5, { length: 110, spawns: [], items: Biome.idolArc(40, 5, 30) }),
       P(3, { length: 145, spawns: [{ type: 'spikes', at: 60 }], items: Biome.idolArc(50, 5, 48) }),
@@ -338,11 +395,13 @@ class Temple extends Biome {
       P(d > 0.35 ? 2 : 0, (dd) => ({
         length: 175,
         spawns: dd > 0.6
-          ? [{ type: 'bat', at: 100, alt: 18 }, { type: 'bat', at: 134, alt: 18 }]
-          : [{ type: 'bat', at: 100, alt: 18 }],
+          ? [{ type: 'bat', at: 100, alt: 19 }, { type: 'bat', at: 134, alt: 19 }]
+          : [{ type: 'bat', at: 100, alt: 19 }],
         items: [],
       })),
-      P(d > 0.4 ? 2 : 0, { length: 205, spawns: [{ type: 'jaguar', at: 155 }], items: [] }),
+      P(d > 0.4 ? 2 : 0, {
+        length: 205, spawns: [{ type: 'spikes', at: 60 }, { type: 'warrior', at: 152 }], items: [],
+      }),
       P(d > 0.45 ? 1.5 : 0, {
         length: 200, spawns: [{ type: 'pit', at: 46, w: 38 }, { type: 'statue', at: 140 }], items: [],
       }),

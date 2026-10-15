@@ -4,15 +4,16 @@
  * Демонстрирует «триггерное» поведение.
  */
 class Jaguar extends Enemy {
-  static TRIGGER_RANGE = 150; // px — когда начинает гнаться
-  static CHARGE_ACCEL = 260;  // px/с^2
-  static CHARGE_MAX = 150;    // px/с
+  static TRIGGER_RANGE = 250; // px — замечает героя раньше и бросается раньше
+  static CHARGE_ACCEL = 520;  // px/с^2 — разгон быстрее
+  static CHARGE_MAX = 205;    // px/с — и максимальная скорость выше
 
   #chargeSpeed = 0;
   #charging = false;
 
   constructor(x) {
-    super(x, CONFIG.GROUND_Y - 12, 13, 12);
+    // хитбокс 14px — по ширине видимого тела (с хвостом арт ещё шире)
+    super(x, CONFIG.GROUND_Y - 12, 14, 12);
   }
 
   update(dt) {
@@ -38,6 +39,7 @@ class Jaguar extends Enemy {
 
   draw(ctx, cam) {
     const frame = this.#charging ? this.frameBy(0.09, 2, 'jaguar_') : 'jaguar_0';
-    this.drawSprite(ctx, cam, frame, -2, -1, true);
+    // якорь: арт 16x14 центрируется, низ лап ровно на земле
+    this.drawSprite(ctx, cam, frame, -4.5, -8, true);
   }
 }

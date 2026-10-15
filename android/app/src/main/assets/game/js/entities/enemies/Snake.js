@@ -7,7 +7,9 @@ class Snake extends Enemy {
   static SLITHER = 26; // px/с — дополнительное приближение к игроку
 
   constructor(x) {
-    super(x, CONFIG.GROUND_Y - 13, 10, 13);
+    // хитбокс шире (14px): совпадает с видимым телом кобры —
+    // касание «по картинке» гарантированно даёт урон
+    super(x, CONFIG.GROUND_Y - 13, 14, 13);
   }
 
   update(dt) {
@@ -17,6 +19,7 @@ class Snake extends Enemy {
   }
 
   draw(ctx, cam) {
-    this.drawSprite(ctx, cam, this.frameBy(0.5, 2, 'snake_'), -2, 0, true);
+    // якорь: арт 14x14 (28px) центрируется по хитбоксу, низ на земле
+    this.drawSprite(ctx, cam, this.frameBy(0.5, 2, 'snake_'), -3.5, -7.5, true);
   }
 }

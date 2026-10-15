@@ -115,6 +115,7 @@ vm.runInContext(`
   events.on('enemy:stomped', () => { globalThis.__stomps = (globalThis.__stomps||0)+1; });
   events.on('player:dead', () => { globalThis.__deaths = (globalThis.__deaths||0)+1; });
   events.on('idol:collected', () => { globalThis.__idols = (globalThis.__idols||0)+1; });
+  events.on('victory', () => { globalThis.__victories = (globalThis.__victories||0)+1; });
   // снимок скорости в момент смены локации: должна сбрасываться
   events.on('biome:changed', (e) => {
     if (!globalThis.__game) return;
@@ -233,7 +234,9 @@ frames(24000, (i) => {
   }
 });
 assert(game.world.distance > 1500, 'long: долгий забег (' + game.world.distance + ' м)');
-assert(sandbox.__biomeChanges >= 4, 'biome: все локации сменяются (' + sandbox.__biomeChanges + ' смен)');
+assert(sandbox.__biomeChanges >= 3, 'biome: все локации сменяются (' + sandbox.__biomeChanges + ' смен)');
+assert((sandbox.__victories || 0) >= 1, 'victory: после трёх локаций наступает победа');
+assert(game.state === game.states.victory, 'victory: экран победы показан (' + game.state.constructor.name + ')');
 assert(player.lives === livesBefore, 'godmode: за долгий забег урон не прошёл');
 assert(maxProg > 0.7, 'speed: прогресс локации доходит до её конца (' + maxProg.toFixed(2) + ')');
 assert(maxSpeed > CONFIG.RUN_START + 60, 'speed: внутри локации скорость растёт (до ' + Math.round(maxSpeed) + ')');

@@ -25,6 +25,7 @@ class Game {
       play: new PlayState(this),
       pause: new PauseState(this),
       over: new OverState(this),
+      victory: new VictoryState(this),
     };
     this.state = this.states.menu;
 
@@ -64,6 +65,10 @@ class Game {
       audio().playSong(biome.track);
     });
     events.on('audio:toggle', () => audio().toggleMute());
+    // победа: все три локации пройдены
+    events.on('victory', () => {
+      if (this.state === this.states.play) this.setState('victory');
+    });
     events.on('ui:pause', () => {
       if (this.state === this.states.play) this.setState('pause');
       else if (this.state === this.states.pause) this.setState('play');
@@ -75,6 +80,7 @@ class Game {
       if (s === this.states.menu) this.startRun();
       else if (s === this.states.pause) this.setState('play');
       else if (s === this.states.over && s.canRetry()) this.startRun();
+      else if (s === this.states.victory && s.canRetry()) this.startRun();
     });
 
     // свернули окно — пауза
@@ -242,6 +248,79 @@ class OverState {
 
     if (Math.floor(this.t * 2) % 2 === 0) {
       PixelFont.draw(ctx, 'НАЖМИ ЧТОБЫ НАЧАТЬ СНАЧАЯ', cx, 130, { align: 'center', color: '#f7f3e3', shadow: '#141220' });
+    }
+  }
+}
+
+/** Победа: все три локации пройдены! Бриллиант и предложение сыграть ещё. */
+class VictoryState {
+  constructor(game) { this.game = game; this.t = 0; }
+
+  enter() {
+    this.t = 0;
+    this.game.saveBest(this.game.finalScore);
+    const audio = AudioManager.instance;
+    audio.stopSong();
+    audio.play('victory');
+  }
+
+  canRetry() { return this.t > 0.8; }
+
+  update(dt) {
+    this.t += dt;
+    if (this.canRetry() && (this.game.input.wasPressed('jump') || this.game.input.wasPressed('pause'))) {
+      this.game.startRun();
+    }
+  }
+
+  draw(ctx) {
+    const game = this.game;
+    const t = this.t;
+    game.world.draw(ctx);
+
+    ctx.fillStyle = 'rgba(10,8,16,0.62)';
+    ctx.fillRect(0, 0, CONFIG.WIDTH, CONFIG.HEIGHT);
+
+    const cx = CONFIG.WIDTH / 2;
+
+    // --- бриллиант: процедурный огранённый алмаз с бликом ---
+    const bob = Math.round(Math.sin(t * 2.2) * 3);
+    const dy = 20 + bob;
+    // корона (верх)
+    ctx.fillStyle = '#8fe8f0';
+    ctx.fillRect(cx - 10, dy, 20, 2);
+    ctx.fillStyle = '#5fd0e0';
+    ctx.fillRect(cx - 12, dy + 2, 24, 4);
+    ctx.fillStyle = '#3fb8d8';
+    ctx.fillRect(cx - 14, dy + 6, 28, 3);
+    // грани
+    ctx.fillStyle = '#c8f4f8';
+    ctx.fillRect(cx - 10, dy + 2, 5, 3);
+    ctx.fillRect(cx - 3, dy + 7, 4, 2);
+    ctx.fillStyle = '#2a90b8';
+    ctx.fillRect(cx + 5, dy + 3, 7, 5);
+    ctx.fillRect(cx + 8, dy + 7, 4, 2);
+    // низ-пирамида
+    ctx.fillStyle = '#3fb8d8';
+    ctx.fillRect(cx - 12, dy + 9, 24, 2);
+    ctx.fillStyle = '#2a90b8';
+    ctx.fillRect(cx - 8, dy + 11, 16, 3);
+    ctx.fillRect(cx - 4, dy + 14, 8, 3);
+    ctx.fillRect(cx - 2, dy + 17, 4, 2);
+    // переливающиеся блики
+    if (Math.floor(t * 3) % 2 === 0) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(cx - 12, dy + 1, 2, 2);
+      ctx.fillRect(cx + 10, dy + 8, 1, 1);
+    }
+
+    PixelFont.draw(ctx, 'ПОБЕДА', cx, 66, { align: 'center', scale: 4, color: '#f2e2b0', shadow: '#141220' });
+    PixelFont.draw(ctx, 'ВСЕ ЛОКАЦИИ ПРОЙДЕНЫ!', cx, 102, { align: 'center', color: '#8fe8f0', shadow: '#141220' });
+    PixelFont.draw(ctx, 'ОЧКИ ' + game.finalScore, cx, 118, { align: 'center', color: '#f2e2b0', shadow: '#141220' });
+    PixelFont.draw(ctx, 'РЕКОРД ' + game.best, cx, 132, { align: 'center', color: '#c9832e', shadow: '#141220' });
+
+    if (Math.floor(this.t * 2) % 2 === 0) {
+      PixelFont.draw(ctx, 'НАЖМИ ЧТОБЫ СЫГРАТЬ ЕЩЁ', cx, 156, { align: 'center', color: '#f7f3e3', shadow: '#141220' });
     }
   }
 }

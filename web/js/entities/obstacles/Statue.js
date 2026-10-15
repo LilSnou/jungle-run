@@ -5,7 +5,8 @@
  */
 class Statue extends Obstacle {
   constructor(x) {
-    super(x, CONFIG.GROUND_Y - 30, 12, 30);
+    // основание утоплено на 2px в траву — идол стоит на земле
+    super(x, CONFIG.GROUND_Y - 28, 12, 30);
   }
 
   get hitbox() {

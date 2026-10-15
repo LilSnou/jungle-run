@@ -12,7 +12,7 @@ class EnemyFactory {
     switch (type) {
       case 'snake': return new Snake(x);
       case 'jaguar': return new Jaguar(x);
-      case 'bat': return new Bat(x, opts.alt || 18);
+      case 'bat': return new Bat(x, opts.alt || 19);
       case 'warrior': return new Warrior(x);
       case 'spear': return new Spear(x, opts.y || CONFIG.GROUND_Y - 12);
       default: return null;

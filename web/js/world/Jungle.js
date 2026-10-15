@@ -48,6 +48,23 @@ class Jungle extends Biome {
     for (let i = 0; i < 3; i++) {
       this.birds.push({ x: i * 110 + rng() * 40, y: 24 + rng() * 30, speed: 14 + rng() * 10, phase: rng() * 6 });
     }
+
+    // бабочки над травой (передний план)
+    this.flutters = [];
+    for (let i = 0; i < 3; i++) {
+      this.flutters.push({
+        x: i * 97 + rng() * 60,
+        y: 78 + rng() * 52,
+        phase: rng() * 6,
+        color: rng() > 0.5 ? '#ffd45e' : '#f2f0dc',
+      });
+    }
+
+    // папоротники, грибы и цветы вдоль земли (нарисованы поверх героя — глубина)
+    this.ferns = [];
+    for (let i = 0; i < 14; i++) {
+      this.ferns.push({ x: i * 25 + rng() * 10, kind: Math.floor(rng() * 3) });
+    }
   }
 
   get name() { return 'ДЖУНГЛИ'; }
@@ -93,7 +110,7 @@ class Jungle extends Biome {
 
     // --- дальние горы с водопадами ---
     Biome.parallax(ctx, cam, 0.13, 350, this.farMountains, (ctx2, x, m) => {
-      const base = GY - 16;
+      const base = GY + 4; // низ гор уходит под землю — не «парят»
       for (let k = 0; k < m.h; k++) {
         const w = Math.round(m.w * (1 - 0.85 * (k / m.h)));
         ctx2.fillStyle = k > m.h * 0.6 ? '#2f6b63' : '#3d7f74';
@@ -121,7 +138,7 @@ class Jungle extends Biome {
 
     // --- ближние холмы ---
     Biome.parallax(ctx, cam, 0.22, 336, this.nearMountains, (ctx2, x, m) => {
-      const base = GY - 14;
+      const base = GY + 3; // холмы сидят на земле
       for (let k = 0; k < m.h; k++) {
         const w = Math.round(m.w * (1 - 0.9 * (k / m.h)));
         ctx2.fillStyle = k > m.h * 0.5 ? '#2b5f3f' : '#35704a';
@@ -131,7 +148,7 @@ class Jungle extends Biome {
 
     // --- деревья трёх видов ---
     Biome.parallax(ctx, cam, 0.38, 324, this.trees, (ctx2, x, tr) => {
-      const base = GY - 10;
+      const base = GY + 2; // стволы стоят на земле
       if (tr.kind === 0) {
         // широкая тропическая крона
         ctx2.fillStyle = '#4a3520';
@@ -168,7 +185,7 @@ class Jungle extends Biome {
 
     // --- кусты у самой земли ---
     Biome.parallax(ctx, cam, 0.72, 320, this.bushes, (ctx2, x, b) => {
-      const base = GY - 8;
+      const base = GY + 2; // кусты на земле, а не в воздухе
       ctx2.fillStyle = '#276b34';
       ctx2.fillRect(x, base - b.h, b.w, b.h);
       ctx2.fillRect(x + 2, base - b.h - 3, b.w - 4, 4);
@@ -219,10 +236,12 @@ class Jungle extends Biome {
 
   drawForeground(ctx, cam) {
     const t = this.time;
+    const W = CONFIG.WIDTH;
+    const GY = CONFIG.GROUND_Y;
 
     // стайка птиц, пересекающих экран
     for (const b of this.birds) {
-      const bx = ((b.x + t * b.speed) % (CONFIG.WIDTH + 80)) - 40;
+      const bx = ((b.x + t * b.speed) % (W + 80)) - 40;
       const by = b.y + Math.sin(t * 2 + b.phase) * 4;
       const flap = Math.floor(t * 8 + b.phase) % 2;
       ctx.fillStyle = '#1c2a24';
@@ -234,27 +253,59 @@ class Jungle extends Biome {
     // светлячки-споры
     ctx.fillStyle = '#d8f5a3';
     for (let i = 0; i < 7; i++) {
-      const x = ((i * 61 + t * 10 * (i % 2 ? 1 : -1)) % (CONFIG.WIDTH + 40)) - 20;
+      const x = ((i * 61 + t * 10 * (i % 2 ? 1 : -1)) % (W + 40)) - 20;
       const y = 36 + Math.sin(t * 1.4 + i * 2.1) * 20 + i * 13;
       const blink = Math.floor(t * 4 + i) % 3 !== 0;
       if (blink) ctx.fillRect(Math.round(x), Math.round(y), 2, 2);
     }
 
-    // крупные листья по краям экрана (передний план)
-    ctx.fillStyle = '#1f4f26';
-    ctx.fillRect(0, 116, 14, 5);
-    ctx.fillRect(4, 122, 10, 4);
-    ctx.fillStyle = '#2b6b31';
-    ctx.fillRect(CONFIG.WIDTH - 13, 104, 13, 5);
-    ctx.fillRect(CONFIG.WIDTH - 9, 110, 9, 4);
+    // бабочки над травой
+    for (const b of this.flutters) {
+      const bx = ((b.x - t * 16) % (W + 60) + W + 60) % (W + 60) - 30;
+      const by = b.y + Math.sin(t * 2.4 + b.phase) * 6;
+      const flap = Math.floor(t * 10 + b.phase) % 2;
+      ctx.fillStyle = b.color;
+      ctx.fillRect(Math.round(bx), Math.round(by), 2, 2);
+      ctx.fillRect(Math.round(bx) + (flap ? -2 : -1), Math.round(by) - 1, 2, 1);
+      ctx.fillRect(Math.round(bx) + 2, Math.round(by) - 1, 2, 1);
+    }
+
+    // папоротники, грибы и цветы вдоль земли (передний план — глубина сцены)
+    Biome.parallax(ctx, cam, 1.05, 350, this.ferns, (ctx2, x, f) => {
+      if (f.kind === 0) {
+        ctx2.fillStyle = '#2f6b35';
+        ctx2.fillRect(x, GY - 6, 1, 6);
+        ctx2.fillRect(x - 3, GY - 5, 3, 1);
+        ctx2.fillRect(x + 1, GY - 4, 3, 1);
+        ctx2.fillRect(x - 2, GY - 7, 2, 1);
+        ctx2.fillStyle = '#4e9a3f';
+        ctx2.fillRect(x + 1, GY - 6, 3, 1);
+      } else if (f.kind === 1) {
+        ctx2.fillStyle = '#efe3c8';
+        ctx2.fillRect(x, GY - 4, 2, 4);
+        ctx2.fillStyle = '#b03027';
+        ctx2.fillRect(x - 2, GY - 7, 6, 3);
+        ctx2.fillStyle = '#efe3c8';
+        ctx2.fillRect(x - 1, GY - 6, 1, 1);
+        ctx2.fillRect(x + 1, GY - 5, 1, 1);
+      } else {
+        ctx2.fillStyle = '#3fae4a';
+        ctx2.fillRect(x, GY - 5, 1, 5);
+        ctx2.fillRect(x + 2, GY - 4, 1, 4);
+        ctx2.fillRect(x + 4, GY - 3, 1, 3);
+        ctx2.fillStyle = '#d94f6b';
+        ctx2.fillRect(x, GY - 7, 2, 2);
+      }
+    });
   }
 
   getPattern(d) {
     const rng = this.rng;
     const P = (weight, value) => ({ weight, value });
+    // Джунгли: лианы, ямы, змеи, ягуары и летучие мыши (шипы и воины — другие локации)
     const table = [
       P(3, { length: 110, spawns: [], items: Biome.idolArc(40, 4, 30) }),
-      P(3, { length: 145, spawns: [{ type: 'spikes', at: 60 }], items: Biome.idolArc(50, 5, 48) }),
+      P(3, { length: 145, spawns: [{ type: 'vine', at: 60 }], items: Biome.idolArc(50, 5, 48) }),
       P(3, {
         length: 150,
         spawns: [{ type: 'vine', at: 70 }],
@@ -267,7 +318,9 @@ class Jungle extends Biome {
       })),
       P(d > 0.1 ? 2 : 0, { length: 150, spawns: [{ type: 'snake', at: 95 }], items: [] }),
       P(d > 0.3 ? 2 : 0, {
-        length: 168, spawns: [{ type: 'spikes', at: 60 }, { type: 'spikes', at: 92 }], items: [],
+        length: 175,
+        spawns: [{ type: 'vine', at: 60 }, { type: 'pit', at: 128, w: 34 }], // связка «скользи и прыгай»
+        items: [],
       }),
       P(d > 0.2 ? 2 : 0, {
         length: 200,
@@ -277,16 +330,16 @@ class Jungle extends Biome {
       P(d > 0.25 ? 2 : 0, (dd) => ({
         length: 165,
         spawns: dd > 0.6
-          ? [{ type: 'bat', at: 95, alt: 18 }, { type: 'bat', at: 128, alt: 18 }]
-          : [{ type: 'bat', at: 95, alt: 18 }],
+          ? [{ type: 'bat', at: 95, alt: 19 }, { type: 'bat', at: 128, alt: 19 }]
+          : [{ type: 'bat', at: 95, alt: 19 }],
         items: [],
       })),
       P(d > 0.4 ? 2 : 0, { length: 200, spawns: [{ type: 'jaguar', at: 150 }], items: [] }),
       P(d > 0.35 ? 1.5 : 0, {
-        length: 190, spawns: [{ type: 'vine', at: 60 }, { type: 'spikes', at: 130 }], items: [],
+        length: 190, spawns: [{ type: 'vine', at: 60 }, { type: 'snake', at: 134 }], items: [],
       }),
       P(d > 0.45 ? 1.5 : 0, {
-        length: 190, spawns: [{ type: 'pit', at: 50, w: 34 }, { type: 'snake', at: 132 }], items: [],
+        length: 190, spawns: [{ type: 'pit', at: 50, w: 34 }, { type: 'snake', at: 134 }], items: [],
       }),
       P(0.6, { length: 130, spawns: [], items: [{ type: 'heart', at: 60, alt: 32 }] }),
     ];

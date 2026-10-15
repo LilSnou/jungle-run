@@ -172,6 +172,18 @@ class AudioManager {
       case 'click':
         this.#tone({ freq: 720, glideTo: 520, dur: 0.07, vol: 0.25 });
         break;
+      case 'victory': {
+        // фанфара: восходящее арpeggio и длинная финальная нота
+        const seq = [
+          ['C4', 0, 0.12], ['E4', 0.12, 0.12], ['G4', 0.24, 0.12], ['C5', 0.36, 0.3],
+          ['G4', 0.66, 0.1], ['C5', 0.76, 0.6],
+        ];
+        for (const [n, when, dur] of seq) {
+          this.#tone({ freq: AudioManager.#freq(n), when, dur, vol: 0.4 });
+          this.#tone({ type: 'triangle', freq: AudioManager.#freq(n) / 2, when, dur, vol: 0.28 });
+        }
+        break;
+      }
     }
   }
 
@@ -194,6 +206,13 @@ class AudioManager {
     if (!this.#song) { clearInterval(this.#timer); this.#timer = null; }
   }
 
+  /** Полная остановка музыки (экран победы). */
+  stopSong() {
+    this.#song = null;
+    clearInterval(this.#timer);
+    this.#timer = null;
+  }
+
   #schedule() {
     if (!this.#ctx || !this.#song || this.#muted) return;
     const stepDur = 60 / this.#song.bpm / 4; // 16-е ноты
@@ -202,6 +221,7 @@ class AudioManager {
       const lead = this.#song.lead[i];
       const bass = this.#song.bass[i];
       const drum = this.#song.drums[i];
+      const arp = this.#song.arp ? this.#song.arp[i] : null;
       const when = this.#nextTime - this.#ctx.currentTime;
 
       if (bass && bass !== '.') {
@@ -210,9 +230,13 @@ class AudioManager {
       if (lead && lead !== '.') {
         this.#tone({ type: 'square', freq: AudioManager.#freq(lead), when, dur: stepDur * 0.9, vol: 0.16, dest: this.#musicGain });
       }
+      if (arp && arp !== '.') {
+        this.#tone({ type: 'square', freq: AudioManager.#freq(arp), when, dur: stepDur * 0.7, vol: 0.07, dest: this.#musicGain });
+      }
       if (drum === 'k') this.#noise({ when, dur: 0.09, vol: 0.35, from: 400, to: 80 });
       if (drum === 'h') this.#noise({ when, dur: 0.03, vol: 0.12, from: 9000, to: 6000 });
       if (drum === 's') this.#noise({ when, dur: 0.14, vol: 0.25, from: 4000, to: 900 });
+      if (drum === 't') this.#noise({ when, dur: 0.11, vol: 0.3, from: 900, to: 150 }); // «том» для деревни
 
       this.#nextTime += stepDur;
       this.#step++;
@@ -222,33 +246,43 @@ class AudioManager {
 
 /**
  * Музыкальные треки биомов (16-шаговые петли, NES-стиль).
- * '.', — пауза. k — бочка, s — малый барабан, h — хэт.
+ * У каждой локации — свой темп, тональность и ритм:
+ *   jungle  — 132 BPM, C-минор, «мчащийся» рифф;
+ *   village — 112 BPM, F-мажор, племенные том-барабаны;
+ *   temple  — 150 BPM, D-минор, тревожный арпеджио-канал (arp).
+ * '.', — пауза. k — бочка, s — малый барабан, h — хэт, t — том.
  */
 const AudioTracks = {
   jungle: {
     name: 'jungle', bpm: 132,
-    bass:  ['C2', '.', '.', 'C2', 'G2', '.', 'C2', '.',
-            'Bb1', '.', '.', 'Bb1', 'F2', '.', 'Bb1', '.'],
-    lead:  ['C5', '.', 'Eb5', 'F5', '.', 'G5', '.', 'F5',
-            'Eb5', '.', 'C5', '.', 'Bb4', '.', 'G4', '.'],
+    bass:  ['C2', 'C2', '.', 'C2', 'Eb2', '.', 'C2', '.',
+            'Bb1', 'Bb1', '.', 'Bb1', 'G2', '.', 'Ab2', '.'],
+    lead:  ['G4', '.', 'Ab4', 'G4', '.', 'Eb4', '.', 'C4',
+            'Eb4', '.', 'F4', 'G4', '.', 'Bb4', '.', 'G4'],
+    arp:   ['.', '.', 'C4', '.', '.', '.', 'Eb4', '.',
+            '.', '.', 'G4', '.', '.', '.', 'C5', '.'],
     drums: ['k', 'h', 'h', 'h', 's', 'h', 'k', 'h',
-            'k', 'h', 'h', 'h', 's', 'h', 'h', 'k'],
+            'k', 'h', 'h', 'h', 's', 'h', 'h', 's'],
   },
   village: {
-    name: 'village', bpm: 120,
-    bass:  ['E2', '.', 'E2', '.', 'G2', '.', 'E2', '.',
-            'D2', '.', 'D2', '.', 'A2', '.', 'G2', '.'],
-    lead:  ['E4', '.', '.', 'G4', '.', 'A4', '.', '.',
-            'B4', '.', 'A4', '.', 'G4', '.', 'E4', '.'],
-    drums: ['k', '.', 'h', '.', 'k', '.', 'h', '.',
-            'k', '.', 'h', 'h', 's', '.', 'h', '.'],
+    name: 'village', bpm: 112,
+    bass:  ['F2', '.', 'F2', '.', 'F2', '.', 'C2', '.',
+            'Bb1', '.', 'Bb1', '.', 'C2', '.', 'C2', '.'],
+    lead:  ['A4', '.', 'C5', '.', 'A4', 'G4', 'F4', '.',
+            'G4', '.', 'A4', 'C5', '.', 'A4', '.', '.'],
+    arp:   ['.', '.', '.', 'F4', '.', '.', '.', 'A4',
+            '.', '.', '.', 'C5', '.', '.', '.', 'A4'],
+    drums: ['k', '.', 't', 'k', 'h', '.', 'k', '.',
+            'k', '.', 't', 'k', 's', 'h', 'k', '.'],
   },
   temple: {
-    name: 'temple', bpm: 142,
-    bass:  ['Ab1', '.', 'Ab1', 'Ab1', '.', 'Eb2', '.', 'Ab1',
-            'G1', '.', 'G1', 'G1', '.', 'D2', '.', 'G1'],
-    lead:  ['Ab4', '.', '.', 'C5', 'B4', '.', 'Eb5', '.',
-            'D5', '.', '.', 'B4', 'Bb4', '.', 'G4', '.'],
+    name: 'temple', bpm: 150,
+    bass:  ['D2', '.', 'D2', 'D2', '.', 'A2', '.', 'D2',
+            'C2', '.', 'C2', 'C2', '.', 'G2', '.', 'C2'],
+    lead:  ['D5', '.', 'C5', '.', 'A4', '.', 'B4', '.',
+            'C5', '.', 'D5', 'F5', '.', 'E5', '.', 'D5'],
+    arp:   ['D4', 'F4', 'A4', 'F4', 'D4', 'F4', 'A4', 'C5',
+            'C4', 'E4', 'G4', 'E4', 'C4', 'E4', 'G4', 'B4'],
     drums: ['k', 'h', 'h', 'k', 's', 'h', 'k', 'h',
             'k', 'h', 'k', 'h', 's', 'h', 'h', 's'],
   },

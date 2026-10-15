@@ -5,7 +5,7 @@
  */
 class Bat extends Enemy {
   static DRIFT = 42;   // px/с — сносит навстречу герою
-  static AMPLITUDE = 7; // px — «машет крыльями» по вертикали
+  static AMPLITUDE = 3; // px — лёгкое покачивание (крылья машут кадрами)
 
   #baseY;
   #phase;
@@ -13,11 +13,13 @@ class Bat extends Enemy {
 
   /**
    * @param {number} x мировая X
-   * @param {number} altitude высота полёта над землёй (18 — на уровне головы)
+   * @param {number} altitude высота полёта над землёй (19 — на уровне головы;
+   *   нижняя точка мыши (141) не задевает скользящего героя, а верхняя (135)
+   *   гарантированно пересекается с бегущим)
    */
-  constructor(x, altitude = 18) {
+  constructor(x, altitude = 19) {
     const baseY = CONFIG.GROUND_Y - altitude;
-    super(x, baseY, 10, 7);
+    super(x, baseY, 13, 7);
     this.#baseY = baseY;
     this.#phase = Math.random() * Math.PI * 2;
     this.#amp = Bat.AMPLITUDE;
@@ -33,6 +35,7 @@ class Bat extends Enemy {
   }
 
   draw(ctx, cam) {
-    this.drawSprite(ctx, cam, this.frameBy(0.12, 2, 'bat_'), -2, 0, true);
+    // якорь: арт 14x8 центрируется по хитбоксу
+    this.drawSprite(ctx, cam, this.frameBy(0.12, 2, 'bat_'), -3.75, -3.5, true);
   }
 }

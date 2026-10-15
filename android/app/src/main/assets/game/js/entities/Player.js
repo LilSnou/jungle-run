@@ -135,6 +135,11 @@ class Player extends Entity {
     if (this.#dead) {
       this.#vy += CONFIG.GRAVITY * dt;
       this.y += this.#vy * dt;
+      // труп ложится на землю и замирает — камера не летит за ним вниз
+      if (this.y + this.h >= CONFIG.GROUND_Y) {
+        this.y = CONFIG.GROUND_Y - this.h;
+        this.#vy = 0;
+      }
       return;
     }
 
@@ -213,8 +218,9 @@ class Player extends Entity {
   draw(ctx, cam) {
     const frame = this.frame;
     if (!frame) return;
-    // Спрайт 16x18, хитбокс 10x16: якорь подгоняет рисунок под хитбокс.
-    const ay = frame === 'player_slide' ? -2 : -1;
-    this.drawSprite(ctx, cam, frame, -3, ay, false);
+    // Спрайт 16x18: якорь таков, что НИЗ рисунка совпадает с низом
+    // хитбокса — герой стоит на земле, а не «тонет» в грунте.
+    const ay = frame === 'player_slide' ? -14 : -10;
+    this.drawSprite(ctx, cam, frame, -6, ay, false);
   }
 }

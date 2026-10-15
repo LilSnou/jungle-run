@@ -5,7 +5,8 @@
  */
 class Spikes extends Obstacle {
   constructor(x, width = 16) {
-    super(x, CONFIG.GROUND_Y - 12, width, 12);
+    // основание утоплено на 2px в траву — шипы стоят на земле, а не «парят»
+    super(x, CONFIG.GROUND_Y - 10, width, 12);
   }
 
   get hitbox() {

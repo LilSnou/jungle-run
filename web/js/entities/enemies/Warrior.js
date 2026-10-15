@@ -13,7 +13,8 @@ class Warrior extends Enemy {
   #timer = 0;
 
   constructor(x) {
-    super(x, CONFIG.GROUND_Y - 15, 10, 15);
+    // хитбокс 13px — по видимому телу с диадемой (арт 16x15)
+    super(x, CONFIG.GROUND_Y - 15, 13, 15);
   }
 
   update(dt) {
@@ -56,6 +57,7 @@ class Warrior extends Enemy {
 
   draw(ctx, cam) {
     const frame = this.#state === 'windup' ? 'warrior_1' : this.frameBy(0.6, 2, 'warrior_');
-    this.drawSprite(ctx, cam, frame, -3, 0, true);
+    // якорь: арт 16x15 центрируется, ступни ровно на земле
+    this.drawSprite(ctx, cam, frame, -4.75, -7.5, true);
   }
 }
