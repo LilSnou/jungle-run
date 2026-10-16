@@ -19,7 +19,7 @@ class Snake extends Enemy {
   }
 
   draw(ctx, cam) {
-    // якорь: арт 14x14 (28px) центрируется по хитбоксу, низ на земле
-    this.drawSprite(ctx, cam, this.frameBy(0.5, 2, 'snake_'), -3.5, -7.5, true);
+    // якорь (0,-1): арт 14x14, низ на земле — как в Godot Snake
+    this.drawSprite(ctx, cam, this.frameBy(0.25, 4, 'snake_'), 0, -1, true);
   }
 }

@@ -29,7 +29,10 @@
 </style>
 </head>
 <body>
-  <div id="stage"><canvas id="game" width="320" height="180"></canvas></div>
+  <!-- Буфер 640x360 = 2 мировых пикселя (ctx.scale(2,2) в Game):
+       арт препятствий (2 арт-пикселя на мировой) рисуется 1:1 —
+       графика совпадает с Godot-ремейком. -->
+  <div id="stage"><canvas id="game" width="640" height="360"></canvas></div>
 
   <!-- 1. Core: константы и утилиты -->
   <script src="js/core/Config.js"></script>
@@ -39,6 +42,7 @@
 
   <!-- 2. Графика: пиксель-арт и шрифт -->
   <script src="js/gfx/PixelFont.js"></script>
+  <script src="js/gfx/GeneratedMaps.js"></script>
   <script src="js/gfx/SpriteStore.js"></script>
 
   <!-- 3. Сущности: абстрактный базовый класс и игрок -->
@@ -65,7 +69,6 @@
   <!-- 6. Предметы и снаряды -->
   <script src="js/entities/items/Item.js"></script>
   <script src="js/entities/items/Idol.js"></script>
-  <script src="js/entities/items/Heart.js"></script>
   <script src="js/entities/projectiles/Spear.js"></script>
 
   <!-- 7. Мир: биомы, фабрики, генератор уровня -->

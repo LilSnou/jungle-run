@@ -308,7 +308,7 @@ class Jungle extends Biome {
       P(3, { length: 145, spawns: [{ type: 'vine', at: 60 }], items: Biome.idolArc(50, 5, 48) }),
       P(3, {
         length: 150,
-        spawns: [{ type: 'vine', at: 70 }],
+        spawns: [{ type: 'log', at: 70 }],
         items: [{ type: 'idol', at: 60, alt: 0 }, { type: 'idol', at: 72, alt: 0 }, { type: 'idol', at: 84, alt: 0 }],
       }),
       P(3, (dd) => ({
@@ -324,7 +324,7 @@ class Jungle extends Biome {
       }),
       P(d > 0.2 ? 2 : 0, {
         length: 200,
-        spawns: [{ type: 'vine', at: 60 }, { type: 'vine', at: 89 }],  // длинное скольжение
+        spawns: [{ type: 'vine', at: 60 }, { type: 'log', at: 89 }],  // длинное скольжение
         items: [{ type: 'idol', at: 56, alt: 0 }, { type: 'idol', at: 74, alt: 0 }, { type: 'idol', at: 92, alt: 0 }],
       }),
       P(d > 0.25 ? 2 : 0, (dd) => ({
@@ -341,7 +341,6 @@ class Jungle extends Biome {
       P(d > 0.45 ? 1.5 : 0, {
         length: 190, spawns: [{ type: 'pit', at: 50, w: 34 }, { type: 'snake', at: 134 }], items: [],
       }),
-      P(0.6, { length: 130, spawns: [], items: [{ type: 'heart', at: 60, alt: 32 }] }),
     ];
     const picked = Biome.weightedPick(rng, table);
     return typeof picked === 'function' ? picked(d) : picked;

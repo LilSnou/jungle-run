@@ -13,6 +13,9 @@ class Game {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d');
     this.ctx.imageSmoothingEnabled = false;
+    // Буфер канваса — 2x мировых единиц (см. index.html): спрайты
+    // рисуются в мировых координатах, детали арта 1:1 с Godot.
+    this.ctx.scale(2, 2);
     this.input = input;
 
     this.world = new World(input);
@@ -59,7 +62,6 @@ class Game {
     events.on('warrior:throw', () => audio().play('click'));
     events.on('enemy:alert', () => audio().play('click'));
     events.on('idol:collected', (p) => { if (!p || !p.silent) audio().play('coin'); });
-    events.on('heart:collected', () => audio().play('heart'));
     events.on('biome:changed', ({ biome }) => {
       audio().play('biome');
       audio().playSong(biome.track);

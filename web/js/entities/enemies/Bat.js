@@ -35,7 +35,7 @@ class Bat extends Enemy {
   }
 
   draw(ctx, cam) {
-    // якорь: арт 14x8 центрируется по хитбоксу
-    this.drawSprite(ctx, cam, this.frameBy(0.12, 2, 'bat_'), -3.75, -3.5, true);
+    // якорь (-0.5,-1): арт 14x8 центрируется по хитбоксу (Godot Bat)
+    this.drawSprite(ctx, cam, this.frameBy(0.12, 4, 'bat_'), -0.5, -1, true);
   }
 }

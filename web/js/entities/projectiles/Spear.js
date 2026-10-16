@@ -19,16 +19,7 @@ class Spear extends Enemy {
   }
 
   draw(ctx, cam) {
-    const S = CONFIG.SCALE;
-    const x = Math.round(this.x - cam.x);
-    const y = Math.round(this.y - cam.y);
-    // древко
-    ctx.fillStyle = '#8a6a3d';
-    ctx.fillRect(x, y + S, this.w * S, S);
-    // остриё слева
-    ctx.fillStyle = '#c8ccd8';
-    ctx.fillRect(x, y + S, S * 2, S);
-    ctx.fillStyle = '#5c5e6b';
-    ctx.fillRect(x + S * 2, y, S, S * 3);
+    // арт 12x4 = хитбокс; копьё летит остриём влево (рисунок Godot Spear)
+    this.drawSprite(ctx, cam, 'spear', 0, 0, false);
   }
 }

@@ -56,8 +56,11 @@ class Warrior extends Enemy {
   }
 
   draw(ctx, cam) {
-    const frame = this.#state === 'windup' ? 'warrior_1' : this.frameBy(0.6, 2, 'warrior_');
-    // якорь: арт 16x15 центрируется, ступни ровно на земле
-    this.drawSprite(ctx, cam, frame, -4.75, -7.5, true);
+    // кадры: 0/1 — покой, 2 — замах, 3 — бросок (как в Godot Warrior)
+    const frame = this.#state === 'windup' ? 'warrior_2'
+      : this.#state === 'throw' ? 'warrior_3'
+      : this.frameBy(0.6, 2, 'warrior_');
+    // якорь (-1.5,0): арт 16x15 центрируется, ступни ровно на земле
+    this.drawSprite(ctx, cam, frame, -1.5, 0, true);
   }
 }

@@ -25,12 +25,13 @@ class ObstacleFactory {
   static create(type, x, opts = {}) {
     switch (type) {
       case 'spikes': return new Spikes(x, opts.w || 16);
-      case 'log': return new LowLog(x);
+      case 'log': return new LowLog(x);            // деревянное бревно (джунгли)
+      case 'log2': return new LowLog(x, 'log2');   // каменный каток (храм)
       case 'vine': return new Vine(x);
       case 'rope': return new RopeTrap(x);
       case 'beam': return new StoneBeam(x);
       case 'statue': return new Statue(x);
-      case 'pit': return new Pit(x, opts.w || 36);
+      case 'pit': return new Pit(x, opts.w || 40);
       default: return null;
     }
   }
@@ -41,7 +42,6 @@ class ItemFactory {
   static create(type, x, y) {
     switch (type) {
       case 'idol': return new Idol(x, y);
-      case 'heart': return new Heart(x, y);
       default: return null;
     }
   }

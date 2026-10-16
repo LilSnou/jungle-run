@@ -54,20 +54,25 @@ class Entity {
   draw(ctx, cam) { /* абстрактно */ }
 
   /**
-   * Универсальный рисунок спрайта с масштабом CONFIG.SCALE.
+   * Универсальный рисунок спрайта (порт Godot Art.make_sprite).
+   * Якорь задаётся в МИРОВЫХ пикселях — так же, как sprite.position
+   * в Godot: левый верх рисунка = позиция сущности + (ax, ay).
    * @param {CanvasRenderingContext2D} ctx
    * @param {{x:number,y:number}} cam   камера
    * @param {string} name   имя спрайта в SpriteStore
-   * @param {number} ax     смещение спрайта по X (в пикселях спрайта)
+   * @param {number} ax     смещение по X, мировых пикселей
    * @param {number} ay     смещение по Y
-   * @param {boolean} flip  зеркально отразить
+   * @param {boolean} flip  зеркально отразить (враги смотрят «на себя»)
+   * @param {number} scale  арт-пикселей в мировой единице:
+   *                        1 — персонажи/предметы, 0.5 — препятствия/декор
    */
-  drawSprite(ctx, cam, name, ax = 0, ay = 0, flip = false) {
+  drawSprite(ctx, cam, name, ax = 0, ay = 0, flip = false, scale = 1) {
     const sprite = flip ? SpriteStore.getFlipped(name) : SpriteStore.get(name);
-    const S = CONFIG.SCALE;
-    const dx = Math.round(this.x + ax * S - cam.x);
-    const dy = Math.round(this.y + ay * S - cam.y);
-    ctx.drawImage(sprite, 0, 0, sprite.width, sprite.height, dx, dy, sprite.width * S, sprite.height * S);
+    const dw = sprite.width * scale;
+    const dh = sprite.height * scale;
+    const dx = Math.round(this.x + ax - cam.x);
+    const dy = Math.round(this.y + ay - cam.y);
+    ctx.drawImage(sprite, 0, 0, sprite.width, sprite.height, dx, dy, dw, dh);
   }
 
   /** Камера «следит» за игроком вертикально, если он падает в яму. */

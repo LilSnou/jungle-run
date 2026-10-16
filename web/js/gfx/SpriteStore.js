@@ -300,22 +300,17 @@ class SpriteStore {
       '......PPPP......',
       '.....OO..OO.....',
     ],
-    heart: [
-      '.EE..EE.',
-      'EEEEEEEE',
-      'WEEEEEEE',
-      'WEEEEEEE',
-      '.EEEEEE.',
-      '..EEEE..',
-      '...EE...',
-      '........',
-    ],
   };
 
   static #cache = new Map();
 
-  /** Построить канвас из карты. */
-  static #build(rows) {
+  /** Построить канвас из карты: старый формат — массив строк с общей
+   *  палитрой SpriteStore.PALETTE; новый (GENERATED_MAPS) — {pal, rows}
+   *  со СВОЕЙ палитрой, индексируемой символами base36 (0-9a-z). */
+  static #build(map) {
+    const isNew = !Array.isArray(map);
+    const pal = isNew ? map.pal : SpriteStore.PALETTE;
+    const rows = isNew ? map.rows : map;
     const w = Math.max(...rows.map((r) => r.length));
     const h = rows.length;
     const cv = document.createElement('canvas');
@@ -324,7 +319,7 @@ class SpriteStore {
     for (let y = 0; y < h; y++) {
       const row = rows[y];
       for (let x = 0; x < row.length; x++) {
-        const color = SpriteStore.PALETTE[row[x]];
+        const color = isNew ? pal[parseInt(row[x], 36)] : pal[row[x]];
         if (color) {
           ctx.fillStyle = color;
           ctx.fillRect(x, y, 1, 1);
@@ -337,9 +332,9 @@ class SpriteStore {
   /** Получить канвас по имени (с кэшированием). */
   static get(name) {
     if (!SpriteStore.#cache.has(name)) {
-      const rows = SpriteStore.MAPS[name];
-      if (!rows) throw new Error('Нет спрайта: ' + name);
-      SpriteStore.#cache.set(name, SpriteStore.#build(rows));
+      const map = SpriteStore.MAPS[name];
+      if (!map) throw new Error('Нет спрайта: ' + name);
+      SpriteStore.#cache.set(name, SpriteStore.#build(map));
     }
     return SpriteStore.#cache.get(name);
   }
@@ -363,3 +358,7 @@ class SpriteStore {
     return SpriteStore.#cache.get(key);
   }
 }
+
+// Карты из PNG (tools/artgen/png_to_maps.py) перекрывают старые
+// рисованные вручную — общий пиксель-арт с Godot-ремейком.
+if (typeof GENERATED_MAPS !== 'undefined') Object.assign(SpriteStore.MAPS, GENERATED_MAPS);

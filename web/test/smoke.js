@@ -147,8 +147,8 @@ function ai(i) {
     if (!e.damageOnTouch && !e.isPit) continue;
     if (e.isPit) {
       if (dx > -18 && dx < 16) jumpNow = true;                     // яма: прыжок с кромки
-    } else if (e.y < CONFIG.GROUND_Y - 11 && e.h <= 9) {
-      // низкие над головой: бревно/лиана/верёвка/балка/мышь/копьё
+    } else if (e.isOverhead || (e.y < CONFIG.GROUND_Y - 11 && e.h <= 9)) {
+      // над головой: подвесы (бревно/лиана/верёвка/балка), мышь, копьё
       if (dx > -(e.w + p.w + 4) && dx < 42) slideNow = true;
     } else if (dx > 6 && dx < 30) {
       jumpNow = true;                                              // шипы, статуя, враги

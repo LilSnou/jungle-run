@@ -136,11 +136,6 @@ class AudioManager {
         this.#tone({ freq: AudioManager.#freq('B5'), dur: 0.06, vol: 0.32 });
         this.#tone({ freq: AudioManager.#freq('E6'), when: 0.06, dur: 0.18, vol: 0.32 });
         break;
-      case 'heart':
-        this.#tone({ type: 'triangle', freq: AudioManager.#freq('C5'), dur: 0.07, vol: 0.4 });
-        this.#tone({ type: 'triangle', freq: AudioManager.#freq('E5'), when: 0.07, dur: 0.07, vol: 0.4 });
-        this.#tone({ type: 'triangle', freq: AudioManager.#freq('G5'), when: 0.14, dur: 0.16, vol: 0.4 });
-        break;
       case 'stomp':
         this.#tone({ freq: 340, glideTo: 90, dur: 0.14, vol: 0.4 });
         this.#noise({ dur: 0.1, vol: 0.3, from: 2500, to: 300 });

@@ -13,7 +13,7 @@
  */
 class Player extends Entity {
   static STAND_H = 16;
-  static SLIDE_H = 8;
+  static SLIDE_H = 7;
   static STAND_W = 10;
   static SLIDE_W = 12;
 
@@ -205,22 +205,21 @@ class Player extends Entity {
     }
   }
 
-  /** Какой кадр анимации показывать. */
+  /** Какой кадр анимации показывать. Мигание при неуязвимости НЕ
+   *  используется (фидбэк дают звук + HUD-вспышка), как в Godot. */
   get frame() {
-    if (this.#invuln > 0 && !this.#dead && this.world.time % 0.2 < 0.1) return null; // мигание
-    if (this.#dead) return 'player_hurt';
+    if (this.#dead) return 'player_dead';
     if (this.#sliding) return 'player_slide';
     if (!this.#onGround) return 'player_jump';
     if (this.#invuln > 0.9) return 'player_hurt';
-    return 'player_run_' + (Math.floor(this.#animTime * 12) % 4);
+    return 'player_run_' + (Math.floor(this.#animTime * 12) % 8);
   }
 
   draw(ctx, cam) {
-    const frame = this.frame;
-    if (!frame) return;
     // Спрайт 16x18: якорь таков, что НИЗ рисунка совпадает с низом
-    // хитбокса — герой стоит на земле, а не «тонет» в грунте.
-    const ay = frame === 'player_slide' ? -14 : -10;
-    this.drawSprite(ctx, cam, frame, -6, ay, false);
+    // хитбокса — герой стоит на земле, а не «тонет» в грунте
+    // (те же якоря, что в Godot Player: -3/-2 и слайд -2/-11).
+    const slide = this.#sliding;
+    this.drawSprite(ctx, cam, this.frame, slide ? -2 : -3, slide ? Player.SLIDE_H - 18 : -2, false);
   }
 }

@@ -411,7 +411,9 @@ class Temple extends Biome {
       P(d > 0.55 ? 1.5 : 0, {
         length: 210, spawns: [{ type: 'beam', at: 55 }, { type: 'spikes', at: 130 }], items: [],
       }),
-      P(0.5, { length: 130, spawns: [], items: [{ type: 'heart', at: 60, alt: 32 }] }),
+      P(d > 0.3 ? 2 : 0, {
+        length: 165, spawns: [{ type: 'log2', at: 70 }], items: Biome.idolArc(46, 4, 44),
+      }),
     ];
     const picked = Biome.weightedPick(rng, table);
     return typeof picked === 'function' ? picked(d) : picked;

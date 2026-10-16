@@ -38,8 +38,11 @@ class Jaguar extends Enemy {
   }
 
   draw(ctx, cam) {
-    const frame = this.#charging ? this.frameBy(0.09, 2, 'jaguar_') : 'jaguar_0';
-    // якорь: арт 16x14 центрируется, низ лап ровно на земле
-    this.drawSprite(ctx, cam, frame, -4.5, -8, true);
+    // кадры бега 1..5 при разгоне, покой — кадр 0 (как в Godot Jaguar)
+    const frame = this.#charging
+      ? 'jaguar_' + (1 + Math.floor(this.animTime / 0.09) % 5)
+      : 'jaguar_0';
+    // якорь (-1,-2): арт 16x14 центрируется, низ лап ровно на земле
+    this.drawSprite(ctx, cam, frame, -1, -2, true);
   }
 }

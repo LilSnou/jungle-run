@@ -1,37 +1,30 @@
 /**
- * Spikes — каменные шипы храма на полную «грудь» героя (12px):
- * их надо перепрыгнуть. Рисуются процедурно (пиксельные треугольники),
- * хитбокс уже рисунка.
+ * Spikes — каменные шипы храма: их надо перепрыгнуть (присед не спасает —
+ * хитбокс стыкуется с землёй). Хитбокс = визуал, как в Godot Spikes:
+ * ячейка 8x7 мировых (арт 16x14 в масштабе 0.5), низ рисунка утоплен
+ * на 1px в траву — шипы стоят на земле, а не «парят».
  */
 class Spikes extends Obstacle {
-  constructor(x, width = 16) {
-    // основание утоплено на 2px в траву — шипы стоят на земле, а не «парят»
-    super(x, CONFIG.GROUND_Y - 10, width, 12);
-  }
+  static CELL = 8;    // мировая ширина ячейки
+  static CELL_H = 7;  // высота рисунка ячейки
 
-  get hitbox() {
-    return { x: this.x + 3, y: this.y + 5, w: this.w - 6, h: this.h - 5 };
+  constructor(x, width = 16) {
+    const cells = Math.max(1, Math.round(width / Spikes.CELL));
+    super(
+      x,
+      CONFIG.GROUND_Y - Spikes.CELL_H + 1,
+      Spikes.CELL * cells,
+      Spikes.CELL_H - 1,
+    );
   }
 
   draw(ctx, cam) {
-    const S = CONFIG.SCALE;
-    const x0 = Math.round(this.x - cam.x);
-    const yb = Math.round(this.y + this.h - cam.y); // линия земли
-    const spikes = Math.floor(this.w / 8);
-
-    // каменная подложка
-    ctx.fillStyle = '#3a3f4a';
-    ctx.fillRect(x0, yb - S, this.w * S, S);
-    ctx.fillStyle = '#565b66';
-    ctx.fillRect(x0, yb - 2 * S, this.w * S, S);
-
-    for (let i = 0; i < spikes; i++) {
-      const cx = x0 + i * 8 * S + 4 * S;
-      for (let k = 0; k < 5; k++) {
-        ctx.fillStyle = k === 0 ? '#e8edf5' : (k === 1 ? '#c2c9d4' : '#9aa3ad');
-        const w = (k + 1) * 2 * S;
-        ctx.fillRect(cx - w / 2, yb - (6 - k) * 2 * S, w, 2 * S);
-      }
+    const art = SpriteStore.get('spikes'); // арт 16x14 — рисунок ОДНОЙ ячейки
+    const cells = Math.round(this.w / Spikes.CELL);
+    const y = Math.round(this.y - cam.y);
+    for (let i = 0; i < cells; i++) {
+      const x = Math.round(this.x + i * Spikes.CELL - cam.x);
+      ctx.drawImage(art, 0, 0, art.width, art.height, x, y, Spikes.CELL, Spikes.CELL_H);
     }
   }
 }

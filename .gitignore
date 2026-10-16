@@ -12,3 +12,12 @@ Thumbs.db
 
 # Node (для headless-тестов)
 node_modules/
+
+# Godot (кэш импорта, локальные настройки)
+godot/.godot/
+
+# Python
+__pycache__/
+
+# Сборки (APK не коммитится — лежит в GitHub Release)
+dist/

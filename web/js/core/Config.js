@@ -22,7 +22,7 @@ const CONFIG = {
   JUMP_BUFFER: 0.10,      // буфер нажатия перед приземлением
 
   START_LIVES: 3,
-  INVULN_TIME: 1.6,       // неуязвимость после урона
+  INVULN_TIME: 2.0,       // неуязвимость после урона (как в Godot)
 
   TRANSITION_EVERY: 550,  // метров до смены локации
   IDOL_SCORE: 50,

@@ -30,9 +30,9 @@ class HUD {
     ctx.fillStyle = 'rgba(10,8,16,0.45)';
     ctx.fillRect(0, 0, W, 22);
 
-    // жизни
-    for (let i = 0; i < world.player.lives; i++) {
-      this.drawHeart(ctx, 6 + i * 12, 6);
+    // жизни: три пиксельных «сердечка»-квадратика (пустые — потерянные)
+    for (let i = 0; i < 3; i++) {
+      this.drawLifeBlock(ctx, 6 + i * 12, 6, i < world.player.lives);
     }
 
     // очки и метры
@@ -67,15 +67,19 @@ class HUD {
     }
   }
 
-  /** Нарисовать пиксельное сердечко жизни. */
-  drawHeart(ctx, x, y) {
-    ctx.fillStyle = '#5a1f1c';
-    ctx.fillRect(x, y, 9, 8);
-    ctx.fillStyle = '#b03027';
-    ctx.fillRect(x + 1, y + 1, 3, 2);
-    ctx.fillRect(x + 5, y + 1, 3, 2);
-    ctx.fillRect(x + 1, y + 3, 7, 2);
-    ctx.fillRect(x + 2, y + 5, 5, 1);
-    ctx.fillRect(x + 3, y + 6, 3, 1);
+  /** Пиксельный квадратик жизни (вместо сердечек-предметов, как в Godot):
+   *  рамка + светлая шапка сверху-слева; alive=false — пустой слот. */
+  drawLifeBlock(ctx, x, y, alive) {
+    const base = alive ? '#c8322a' : '#33303e';
+    const hi = alive ? '#ef6a5c' : '#43404f';
+    const sh = alive ? '#7d1c15' : '#26232f';
+    ctx.fillStyle = base;
+    ctx.fillRect(x, y, 8, 8);
+    ctx.fillStyle = hi;
+    ctx.fillRect(x, y, 8, 2);
+    ctx.fillRect(x, y, 2, 8);
+    ctx.fillStyle = sh;
+    ctx.fillRect(x, y + 6, 8, 2);
+    ctx.fillRect(x + 6, y, 2, 8);
   }
 }
