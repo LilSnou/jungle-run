@@ -27,11 +27,11 @@ var _current_song := ""
 func _ready() -> void:
 	for s in SFX_NAMES:
 		var p := "res://assets/audio/sfx/%s.wav" % s
-		if FileAccess.file_exists(p):
+		if ResourceLoader.exists(p):  # ремап .import виден и в экспорте
 			_sfx[s] = load(p)
 	for m in MUSIC_NAMES:
 		var p := "res://assets/audio/music/%s.wav" % m
-		if FileAccess.file_exists(p):
+		if ResourceLoader.exists(p):  # ремап .import виден и в экспорте
 			var st: AudioStreamWAV = load(p)
 			# зацикливание музыки (фанафара victory — без лупа)
 			if m != "victory":

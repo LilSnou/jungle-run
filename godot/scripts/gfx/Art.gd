@@ -54,7 +54,9 @@ func strip(name: String) -> Texture2D:
 		return _strips[name]
 	var path: String = SHEET_DIR + name + ".png"
 	var tex: Texture2D = null
-	if FileAccess.file_exists(path):
+	# ResourceLoader.exists видит ремапы .import — работает и в экспорте (APK/PCK),
+	# где исходных PNG нет (только .ctex); FileAccess.file_exists там всегда false
+	if ResourceLoader.exists(path):
 		tex = load(path)
 	if tex == null:
 		var c: Array = CELLS.get(name, [8, 8, 1])
@@ -99,7 +101,7 @@ func tex_bg(file_name: String) -> Texture2D:
 		return _bg[file_name]
 	var path: String = BG_DIR + file_name
 	var tex: Texture2D = null
-	if FileAccess.file_exists(path):
+	if ResourceLoader.exists(path):  # ремап .import виден и в экспорте
 		tex = load(path)
 	if tex == null:
 		var img := Image.create(8, 8, false, Image.FORMAT_RGBA8)
@@ -115,7 +117,7 @@ func tiles(name: String) -> Texture2D:
 		return _tiles[name]
 	var path: String = TILE_DIR + "tiles_" + name + ".png"
 	var tex: Texture2D = null
-	if FileAccess.file_exists(path):
+	if ResourceLoader.exists(path):  # ремап .import виден и в экспорте
 		tex = load(path)
 	if tex == null:
 		var img := Image.create(64, 16, false, Image.FORMAT_RGBA8)
