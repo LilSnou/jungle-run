@@ -14,6 +14,7 @@ class Snake extends Enemy {
 
   update(dt) {
     this.tick(dt);
+    if (this.groundFall(dt)) return;   // у края ямы — проваливается в неё
     this.x -= Snake.SLITHER * dt;   // приползает навстречу
     if (this.x < this.world.camera.x - 40) this.kill();
   }

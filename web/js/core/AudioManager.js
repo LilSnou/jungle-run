@@ -147,6 +147,10 @@ class AudioManager {
       case 'fall':
         this.#tone({ type: 'sawtooth', freq: 500, glideTo: 50, dur: 0.5, vol: 0.4 });
         break;
+      case 'heart':
+        this.#tone({ type: 'triangle', freq: AudioManager.#freq('C5'), dur: 0.07, vol: 0.4 });
+        this.#tone({ type: 'triangle', freq: AudioManager.#freq('E5'), when: 0.07, dur: 0.07, vol: 0.4 });
+        break;
       case 'gameOver': {
         const seq = ['G3', 'E3', 'C3', 'G2'];
         seq.forEach((n, i) => this.#tone({

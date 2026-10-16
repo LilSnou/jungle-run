@@ -17,6 +17,8 @@ const STAND_H := 16
 const SLIDE_H := 7
 const STAND_W := 10
 const SLIDE_W := 12
+const SLIDE_MAX := 5.0      # с — максимум непрерывного скольжения
+const SLIDE_COOLDOWN := 0.8 # с — пауза после лимита до следующего приседа
 
 # Кадры composed-листа Art.composed_player():
 const F_RUN := 0     # +8 кадров цикла бега
@@ -32,6 +34,8 @@ var _jumps_left := 1
 var _coyote := 0.0
 var _buffer := 0.0
 var _sliding := false
+var _slide_time := 0.0    # сколько секунд уже скользим (лимит SLIDE_MAX)
+var _slide_cooldown := 0.0 # пауза после лимита — нельзя «шагать» приседом
 var _invuln := 0.0
 var _knock := 0.0
 var _anim_time := 0.0
@@ -102,6 +106,8 @@ func reset(ex: float, ey: float) -> void:
 	_coyote = 0.0
 	_buffer = 0.0
 	_sliding = false
+	_slide_time = 0.0
+	_slide_cooldown = 0.0
 	_invuln = 0.0
 	_knock = 0.0
 	_is_down = false
@@ -165,9 +171,10 @@ func _try_jump() -> bool:
 
 
 func _start_slide() -> void:
-	if _sliding:
+	if _sliding or _slide_cooldown > 0.0:
 		return
 	_sliding = true
+	_slide_time = 0.0
 	y += STAND_H - SLIDE_H
 	h = SLIDE_H
 	w = SLIDE_W
@@ -211,11 +218,17 @@ func update(dt: float) -> void:
 	_buffer = maxf(0.0, _buffer - dt)
 	_coyote = maxf(0.0, _coyote - dt)
 
-	# --- скольжение (кнопка удерживается; вставать под бревном нельзя) ---
+	# --- скольжение (кнопка удерживается; вставать под бревном нельзя;
+	#     непрерывное скольжение ограничено SLIDE_MAX секундами) ---
 	if _on_ground and input.is_down("slide") and not input.was_pressed("jump"):
 		_start_slide()
 	elif _sliding and not input.is_down("slide") and not world.has_overhead(self):
 		_stop_slide()
+	if _sliding:
+		_slide_time += dt
+		if _slide_time >= SLIDE_MAX and not world.has_overhead(self):
+			_stop_slide()
+			_slide_cooldown = SLIDE_COOLDOWN
 
 	# --- гравитация ---
 	_vy += Config.GRAVITY * dt
@@ -234,16 +247,18 @@ func update(dt: float) -> void:
 	else:
 		_on_ground = false
 
-	# --- падение в яму ---
+	# --- падение в яму (урон НАНОСИМ ДО возрождения: respawn ставит
+	#     неуязвимость, и take_damage после него заблокировался бы) ---
 	if y > Config.GROUND_Y + 90:
 		EventBus.emit("player:fall")
 		var respawn_x: float = world.find_safe_ground(x)
-		respawn(respawn_x)
 		take_damage(1)
+		respawn(respawn_x)
 
 	# --- таймеры ---
 	_invuln = maxf(0.0, _invuln - dt)
 	_knock = maxf(0.0, _knock - dt)
+	_slide_cooldown = maxf(0.0, _slide_cooldown - dt)
 	_anim_time += dt
 
 	# --- пыль под ногами и от скольжения ---

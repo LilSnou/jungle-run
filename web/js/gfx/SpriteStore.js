@@ -300,6 +300,16 @@ class SpriteStore {
       '......PPPP......',
       '.....OO..OO.....',
     ],
+    heart: [
+      '.EE..EE.',
+      'EEEEEEEE',
+      'WEEEEEEE',
+      'WEEEEEEE',
+      '.EEEEEE.',
+      '..EEEE..',
+      '...EE...',
+      '........',
+    ],
   };
 
   static #cache = new Map();

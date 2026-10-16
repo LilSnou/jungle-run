@@ -67,6 +67,7 @@ func _bind_events() -> void:
 	EventBus.on("warrior:throw", _sfx_click)
 	EventBus.on("enemy:alert", _sfx_click)
 	EventBus.on("idol:collected", _sfx_coin)
+	EventBus.on("heart:collected", _sfx_heart)
 	EventBus.on("biome:changed", _on_biome_changed)
 	EventBus.on("victory", _on_victory)
 	EventBus.on("ui:pause", _on_ui_pause)
@@ -107,6 +108,10 @@ func _sfx_click(_p) -> void:
 func _sfx_coin(p) -> void:
 	if not (p is Dictionary and p.get("silent", false)):
 		AudioManager.play("coin")
+
+
+func _sfx_heart(_p) -> void:
+	AudioManager.play("heart")
 
 
 func _on_biome_changed(p) -> void:

@@ -16,6 +16,8 @@ class Player extends Entity {
   static SLIDE_H = 7;
   static STAND_W = 10;
   static SLIDE_W = 12;
+  static SLIDE_MAX = 5;        // с — максимум непрерывного скольжения
+  static SLIDE_COOLDOWN = 0.8; // с — пауза после лимита до следующего приседа
 
   #vy = 0;
   #onGround = true;
@@ -23,6 +25,8 @@ class Player extends Entity {
   #coyote = 0;
   #buffer = 0;
   #sliding = false;
+  #slideTime = 0;      // сколько секунд уже скользим (лимит SLIDE_MAX)
+  #slideCooldown = 0;  // пауза после лимита — чтобы нельзя было «шагать» приседом
   #invuln = 0;
   #knock = 0;
   #animTime = 0;
@@ -51,6 +55,7 @@ class Player extends Entity {
     this.w = Player.STAND_W; this.h = Player.STAND_H;
     this.#vy = 0; this.#onGround = true; this.#jumpsLeft = 1;
     this.#coyote = 0; this.#buffer = 0; this.#sliding = false;
+    this.#slideTime = 0; this.#slideCooldown = 0;
     this.#invuln = 0; this.#knock = 0; this.#dead = false;
     this.#lives = this.#maxLives;
   }
@@ -115,8 +120,9 @@ class Player extends Entity {
   }
 
   #startSlide() {
-    if (this.#sliding) return;
+    if (this.#sliding || this.#slideCooldown > 0) return;
     this.#sliding = true;
+    this.#slideTime = 0;
     this.y += Player.STAND_H - Player.SLIDE_H;
     this.h = Player.SLIDE_H;
     this.w = Player.SLIDE_W;
@@ -156,9 +162,18 @@ class Player extends Entity {
     this.#buffer = Math.max(0, this.#buffer - dt);
     this.#coyote = Math.max(0, this.#coyote - dt);
 
-    // --- скольжение (кнопка удерживается; вставать под бревном нельзя) ---
+    // --- скольжение (кнопка удерживается; вставать под бревном нельзя;
+    //     непрерывное скольжение ограничено SLIDE_MAX секундами) ---
     if (this.#onGround && input.isDown('slide') && !input.wasPressed('jump')) this.#startSlide();
     else if (this.#sliding && !input.isDown('slide') && !this.world.hasOverhead(this)) this.#stopSlide();
+    if (this.#sliding) {
+      this.#slideTime += dt;
+      if (this.#slideTime >= Player.SLIDE_MAX && !this.world.hasOverhead(this)) {
+        this.#stopSlide();
+        this.#slideCooldown = Player.SLIDE_COOLDOWN;
+      }
+    }
+    this.#slideCooldown = Math.max(0, this.#slideCooldown - dt);
 
     // --- гравитация ---
     this.#vy += CONFIG.GRAVITY * dt;
@@ -177,12 +192,13 @@ class Player extends Entity {
       this.#onGround = false;
     }
 
-    // --- падение в яму ---
+    // --- падение в яму (урон НАНОСИМ ДО возрождения: respawn ставит
+    //     неуязвимость, и takeDamage после него заблокировался бы) ---
     if (this.y > CONFIG.GROUND_Y + 90) {
       events.emit('player:fall');
       const respawnX = this.world.findSafeGround(this.x);
-      this.respawn(respawnX);
       this.takeDamage(1);
+      this.respawn(respawnX);
     }
 
     // --- таймеры ---

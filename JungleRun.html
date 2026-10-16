@@ -285,6 +285,10 @@ class AudioManager {
       case 'fall':
         this.#tone({ type: 'sawtooth', freq: 500, glideTo: 50, dur: 0.5, vol: 0.4 });
         break;
+      case 'heart':
+        this.#tone({ type: 'triangle', freq: AudioManager.#freq('C5'), dur: 0.07, vol: 0.4 });
+        this.#tone({ type: 'triangle', freq: AudioManager.#freq('E5'), when: 0.07, dur: 0.07, vol: 0.4 });
+        break;
       case 'gameOver': {
         const seq = ['G3', 'E3', 'C3', 'G2'];
         seq.forEach((n, i) => this.#tone({
@@ -683,6 +687,7 @@ const GENERATED_MAPS = {
   "bat_1": {"pal":["#141220","#3e3250","#58486e","#e0544a","#74628c","#f0f0ec"],"rows":[".....0..0.....",".00.010010.00.","02200200200220","21122344322112","11111222211111","00000111100000",".....0550.....","......00......"]},
   "bat_2": {"pal":["#141220","#3e3250","#58486e","#e0544a","#74628c","#f0f0ec"],"rows":[".....0..0.....","....010010....","....020020....","..0003443000..","00222222222200","22111111111122","11110055001111","0000..00..0000"]},
   "bat_3": {"pal":["#141220","#3e3250","#58486e","#e0544a","#74628c","#f0f0ec"],"rows":[".....0..0.....","00000100100000","22220200202222","12222344322221","01111222211110",".000011110000.",".....0550.....","......00......"]},
+  "heart": {"pal":["#b03027","#efe3c8"],"rows":[".00..00.","00000000","10000000","10000000",".000000.","..0000..","...00...","........"]},
   "idol_0": {"pal":["#f5d858","#e8b825","#fff7c8","#141220","#8f6f14"],"rows":["..0000..",".000000.","11211111","13111131","11111111",".111111.",".411114.","...11..."]},
   "idol_1": {"pal":["#f5d858","#e8b825","#141220","#fff7c8","#8f6f14"],"rows":["..0000..",".000000.","11111111","12113121","11111111",".111111.",".411114.","...11..."]},
   "idol_2": {"pal":["#f5d858","#e8b825","#141220","#fff7c8","#8f6f14"],"rows":["..0000..",".000000.","11111111","12111121","11111111",".111131.",".411114.","...11..."]},
@@ -1028,6 +1033,16 @@ class SpriteStore {
       '......PPPP......',
       '.....OO..OO.....',
     ],
+    heart: [
+      '.EE..EE.',
+      'EEEEEEEE',
+      'WEEEEEEE',
+      'WEEEEEEE',
+      '.EEEEEE.',
+      '..EEEE..',
+      '...EE...',
+      '........',
+    ],
   };
 
   static #cache = new Map();
@@ -1200,6 +1215,8 @@ class Player extends Entity {
   static SLIDE_H = 7;
   static STAND_W = 10;
   static SLIDE_W = 12;
+  static SLIDE_MAX = 5;        // с — максимум непрерывного скольжения
+  static SLIDE_COOLDOWN = 0.8; // с — пауза после лимита до следующего приседа
 
   #vy = 0;
   #onGround = true;
@@ -1207,6 +1224,8 @@ class Player extends Entity {
   #coyote = 0;
   #buffer = 0;
   #sliding = false;
+  #slideTime = 0;      // сколько секунд уже скользим (лимит SLIDE_MAX)
+  #slideCooldown = 0;  // пауза после лимита — чтобы нельзя было «шагать» приседом
   #invuln = 0;
   #knock = 0;
   #animTime = 0;
@@ -1235,6 +1254,7 @@ class Player extends Entity {
     this.w = Player.STAND_W; this.h = Player.STAND_H;
     this.#vy = 0; this.#onGround = true; this.#jumpsLeft = 1;
     this.#coyote = 0; this.#buffer = 0; this.#sliding = false;
+    this.#slideTime = 0; this.#slideCooldown = 0;
     this.#invuln = 0; this.#knock = 0; this.#dead = false;
     this.#lives = this.#maxLives;
   }
@@ -1299,8 +1319,9 @@ class Player extends Entity {
   }
 
   #startSlide() {
-    if (this.#sliding) return;
+    if (this.#sliding || this.#slideCooldown > 0) return;
     this.#sliding = true;
+    this.#slideTime = 0;
     this.y += Player.STAND_H - Player.SLIDE_H;
     this.h = Player.SLIDE_H;
     this.w = Player.SLIDE_W;
@@ -1340,9 +1361,18 @@ class Player extends Entity {
     this.#buffer = Math.max(0, this.#buffer - dt);
     this.#coyote = Math.max(0, this.#coyote - dt);
 
-    // --- скольжение (кнопка удерживается; вставать под бревном нельзя) ---
+    // --- скольжение (кнопка удерживается; вставать под бревном нельзя;
+    //     непрерывное скольжение ограничено SLIDE_MAX секундами) ---
     if (this.#onGround && input.isDown('slide') && !input.wasPressed('jump')) this.#startSlide();
     else if (this.#sliding && !input.isDown('slide') && !this.world.hasOverhead(this)) this.#stopSlide();
+    if (this.#sliding) {
+      this.#slideTime += dt;
+      if (this.#slideTime >= Player.SLIDE_MAX && !this.world.hasOverhead(this)) {
+        this.#stopSlide();
+        this.#slideCooldown = Player.SLIDE_COOLDOWN;
+      }
+    }
+    this.#slideCooldown = Math.max(0, this.#slideCooldown - dt);
 
     // --- гравитация ---
     this.#vy += CONFIG.GRAVITY * dt;
@@ -1361,12 +1391,13 @@ class Player extends Entity {
       this.#onGround = false;
     }
 
-    // --- падение в яму ---
+    // --- падение в яму (урон НАНОСИМ ДО возрождения: respawn ставит
+    //     неуязвимость, и takeDamage после него заблокировался бы) ---
     if (this.y > CONFIG.GROUND_Y + 90) {
       events.emit('player:fall');
       const respawnX = this.world.findSafeGround(this.x);
-      this.respawn(respawnX);
       this.takeDamage(1);
+      this.respawn(respawnX);
     }
 
     // --- таймеры ---
@@ -1424,22 +1455,28 @@ class Enemy extends Entity {
   #animTime = 0;
   #stomped = false;
   #flash = 0;
+  #falling = false;
+  #fallVy = 0;
 
   constructor(x, y, w, h) {
     super(x, y, w, h);
     this.world = null;
   }
 
-  get damageOnTouch() { return true; }
-  get stompable() { return !this.#stomped; }
+  get damageOnTouch() { return !this.#falling; }
+  get stompable() { return !this.#stomped && !this.#falling; }
   get animTime() { return this.#animTime; }
+  get falling() { return this.#falling; }
+  /** Летает ли враг (летучие мыши спокойно летают над ямами). */
+  get flies() { return false; }
 
-  /** Игрок прыгнул на голову: враг побеждён. */
+  /** Игрок прыгнул на голову: враг побеждён (исчезает с искрами). */
   onStomp(player) {
     this.#stomped = true;
     this.#flash = 0.12;
     this.world.spawnParticles(this.x + this.w / 2, this.y + this.h / 2, '#f2e2b0', 8, -80);
     events.emit('enemy:stomped', { enemy: this });
+    this.kill(); // победа «в прыжке» — враг умирает и исчезает
   }
 
   /** Игрок коснулся сбоку: враг «уходит», игрок получает урон (World решает). */
@@ -1447,6 +1484,25 @@ class Enemy extends Entity {
 
   /** Тик анимации для потомков. */
   tick(dt) { this.#animTime += dt; }
+
+  /**
+   * Наземные враги у края ямы проваливаются в неё: начинают падать,
+   * теряют способность наносить урон и исчезают в бездне.
+   * Возвращает true, пока враг падает (потомки прерывают update).
+   */
+  groundFall(dt) {
+    if (this.#falling) {
+      this.#fallVy += CONFIG.GRAVITY * dt;
+      this.y += this.#fallVy * dt;
+      if (this.y > CONFIG.GROUND_Y + 80) this.kill();
+      return true;
+    }
+    if (this.world && !this.world.isGroundAt(this.x + this.w / 2)) {
+      this.#falling = true;
+      this.#fallVy = 0;
+    }
+    return false;
+  }
 
   /** Кадр по прошедшему времени: переключение раз в `interval` секунд. */
   frameBy(interval, count, prefix) {
@@ -1473,6 +1529,7 @@ class Snake extends Enemy {
 
   update(dt) {
     this.tick(dt);
+    if (this.groundFall(dt)) return;   // у края ямы — проваливается в неё
     this.x -= Snake.SLITHER * dt;   // приползает навстречу
     if (this.x < this.world.camera.x - 40) this.kill();
   }
@@ -1506,6 +1563,7 @@ class Jaguar extends Enemy {
 
   update(dt) {
     this.tick(dt);
+    if (this.groundFall(dt)) return;   // у края ямы — проваливается в неё
     const player = this.world.player;
     const dx = player.x - this.x;
 
@@ -1566,6 +1624,7 @@ class Bat extends Enemy {
   }
 
   get stompable() { return false; } // сверху её не возьмёшь
+  get flies() { return true; }      // летает — спокойно проходит над ямами
 
   update(dt) {
     this.tick(dt);
@@ -1604,6 +1663,7 @@ class Warrior extends Enemy {
 
   update(dt) {
     this.tick(dt);
+    if (this.groundFall(dt)) return;   // у края ямы — проваливается в неё
     const player = this.world.player;
     const dx = player.x - this.x;
 
@@ -1975,6 +2035,30 @@ class Idol extends Item {
         1, 1,
       );
     }
+  }
+}
+
+</script>
+  <script>
+/* ==== js/entities/items/Heart.js ==== */
+/**
+ * Heart — сердечко: возвращает одно сердце жизни (если оно потеряно).
+ */
+class Heart extends Item {
+  constructor(x, y) {
+    super(x, y, 8, 8);
+  }
+
+  onCollect(player) {
+    if (player.heal()) events.emit('heart:collected', { heart: this });
+    else events.emit('idol:collected', { idol: this, silent: true }); // жизнь полна — очки утешением
+  }
+
+  draw(ctx, cam) {
+    // лёгкое мерцание
+    ctx.globalAlpha = 0.85 + Math.sin(this.time * 6) * 0.15;
+    this.drawSprite(ctx, cam, 'heart', 0, 0, false);
+    ctx.globalAlpha = 1;
   }
 }
 
@@ -2447,6 +2531,7 @@ class Jungle extends Biome {
       P(d > 0.45 ? 1.5 : 0, {
         length: 190, spawns: [{ type: 'pit', at: 50, w: 34 }, { type: 'snake', at: 134 }], items: [],
       }),
+      P(0.6, { length: 130, spawns: [], items: [{ type: 'heart', at: 60, alt: 32 }] }),
     ];
     const picked = Biome.weightedPick(rng, table);
     return typeof picked === 'function' ? picked(d) : picked;
@@ -2801,6 +2886,7 @@ class Village extends Biome {
       P(d > 0.4 ? 1.5 : 0, {
         length: 195, spawns: [{ type: 'pit', at: 46, w: 34 }, { type: 'warrior', at: 140 }], items: [],
       }),
+      P(0.6, { length: 130, spawns: [], items: [{ type: 'heart', at: 60, alt: 32 }] }),
     ];
     const picked = Biome.weightedPick(rng, table);
     return typeof picked === 'function' ? picked(d) : picked;
@@ -3226,6 +3312,7 @@ class Temple extends Biome {
       P(d > 0.3 ? 2 : 0, {
         length: 165, spawns: [{ type: 'log2', at: 70 }], items: Biome.idolArc(46, 4, 44),
       }),
+      P(0.5, { length: 130, spawns: [], items: [{ type: 'heart', at: 60, alt: 32 }] }),
     ];
     const picked = Biome.weightedPick(rng, table);
     return typeof picked === 'function' ? picked(d) : picked;
@@ -3279,6 +3366,7 @@ class ItemFactory {
   static create(type, x, y) {
     switch (type) {
       case 'idol': return new Idol(x, y);
+      case 'heart': return new Heart(x, y);
       default: return null;
     }
   }
@@ -3315,6 +3403,7 @@ class World {
   #biomeStartDist = 0;
   #prevBiome = null;   // предыдущая локация (для плавного кроссфейда)
   #transT = 1;         // таймер перехода (1 = переход завершён)
+  #heartsThisBiome = 0; // сколько сердечек уже упало на этой локации
 
   constructor(input) {
     this.input = input;
@@ -3349,6 +3438,7 @@ class World {
     this.#biomeStartDist = 0;
     this.#prevBiome = null;
     this.#transT = 1;
+    this.#heartsThisBiome = 0;
     this.biome = new this.#biomeClasses[0](1337 + Math.floor(Math.random() * 1000));
     this.player.reset(60, CONFIG.GROUND_Y - Player.STAND_H);
     this.#startX = this.player.x;
@@ -3468,7 +3558,11 @@ class World {
       } else {
         const obstacle = ObstacleFactory.create(s.type, x0 + s.at, s);
         if (obstacle) this.addObstacle(obstacle);
-        else this.addEnemy(EnemyFactory.create(s.type, x0 + s.at, s));
+        else {
+          const enemy = EnemyFactory.create(s.type, x0 + s.at, s);
+          // наземные враги не спавнятся над ямой (летающие — можно)
+          if (enemy && (enemy.flies || this.isGroundAt(enemy.x + enemy.w / 2))) this.addEnemy(enemy);
+        }
       }
     }
     for (const it of pattern.items || []) {
@@ -3511,10 +3605,27 @@ class World {
   #generate() {
     const ahead = this.player.x + CONFIG.WIDTH + 120;
     while (this.#spawnCursor < ahead) {
-      const pattern = this.biome.getPattern(this.difficulty);
+      const pattern = this.#withHeartGuarantee(this.biome.getPattern(this.difficulty));
       this.#spawnPattern(pattern, this.#spawnCursor);
+      if ((pattern.items || []).some((i) => i.type === 'heart')) this.#heartsThisBiome++;
       this.#spawnCursor += pattern.length + Math.floor(this.#rng() * 36);
     }
+  }
+
+  /**
+   * Гарантия сердечек на каждой локации: как минимум одно (к ~30% пути),
+   * второе — с шансом на вторую половине. Недостающее подставляем сами.
+   */
+  #withHeartGuarantee(pattern) {
+    const p = this.biomeProgress;
+    if (this.#heartsThisBiome === 0 && p > 0.3) return this.#heartPattern();
+    if (this.#heartsThisBiome === 1 && p > 0.7 && this.#rng() < 0.5) return this.#heartPattern();
+    return pattern;
+  }
+
+  /** Паттерн с одним сердечком на уровне пояса (под прыжок-подбор). */
+  #heartPattern() {
+    return { length: 140, spawns: [], items: [{ type: 'heart', at: 60, alt: 34 }] };
   }
 
   /** Смена локации. */
@@ -3529,6 +3640,7 @@ class World {
 
     this.biome = new this.#biomeClasses[this.#biomeIndex](1337 + this.#loop * 31 + this.#biomeIndex * 7);
     this.#biomeStartDist = this.distance; // скорость и сложность стартуют заново
+    this.#heartsThisBiome = 0;
     // убираем «предыдущую» локацию впереди игрока
     this.#obstacles = this.#obstacles.filter((o) => o.x < this.player.x);
     this.#enemies = this.#enemies.filter((e) => e.x < this.player.x);
@@ -3636,14 +3748,15 @@ class World {
       }
       if (!e.damageOnTouch) return;
       if (!rectsOverlap(hb, e.hitbox)) return;
-      if (player.invulnerable || player.isDown) return;
 
-      // прыжок на врага
+      // прыжок на врага (работает и во время неуязвимости — стомп не «теряется»)
       if (e.stompable && player.vy > 0 && feet - e.y < 14) {
         e.onStomp(player);
         player.bounce();
         return;
       }
+      if (player.invulnerable || player.isDown) return;
+
       const hit = player.takeDamage(1);
       if (hit) e.onHit(player);
     };
@@ -4021,6 +4134,7 @@ class Game {
     events.on('warrior:throw', () => audio().play('click'));
     events.on('enemy:alert', () => audio().play('click'));
     events.on('idol:collected', (p) => { if (!p || !p.silent) audio().play('coin'); });
+    events.on('heart:collected', () => audio().play('heart'));
     events.on('biome:changed', ({ biome }) => {
       audio().play('biome');
       audio().playSong(biome.track);

@@ -17,6 +17,8 @@ func _init(ex: float) -> void:
 
 func update(dt: float) -> void:
 	tick(dt)
+	if fall_if_no_ground(dt):
+		return  # у края ямы — проваливается в неё
 	x -= SLITHER * dt   # приползает навстречу
 	sprite.frame = frame_by(0.25, 4)
 	_kill_if_offscreen()

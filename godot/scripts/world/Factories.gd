@@ -60,6 +60,8 @@ static func create_item(type: String, x: float, y: float) -> Item:
 	match type:
 		"idol":
 			return Idol.new(x, y)
+		"heart":
+			return Heart.new(x, y)
 	return null
 
 

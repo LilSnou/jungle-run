@@ -62,6 +62,7 @@ class Game {
     events.on('warrior:throw', () => audio().play('click'));
     events.on('enemy:alert', () => audio().play('click'));
     events.on('idol:collected', (p) => { if (!p || !p.silent) audio().play('coin'); });
+    events.on('heart:collected', () => audio().play('heart'));
     events.on('biome:changed', ({ biome }) => {
       audio().play('biome');
       audio().playSong(biome.track);

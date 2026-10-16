@@ -23,6 +23,8 @@ func _init(ex: float) -> void:
 
 func update(dt: float) -> void:
 	tick(dt)
+	if fall_if_no_ground(dt):
+		return  # у края ямы — проваливается в неё
 	var player = world.player
 	var dx: float = player.x - x
 

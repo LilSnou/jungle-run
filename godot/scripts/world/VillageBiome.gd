@@ -92,6 +92,8 @@ func get_pattern(d: float) -> Dictionary:
 			"spawns": [{"type": "jaguar", "at": 150.0}], "items": []}},
 		{"weight": 1.5 if d > 0.4 else 0.0, "value": {"length": 195.0,
 			"spawns": [{"type": "pit", "at": 46.0, "w": 34.0}, {"type": "warrior", "at": 140.0}], "items": []}},
+		{"weight": 0.6, "value": {"length": 130.0, "spawns": [],
+			"items": [{"type": "heart", "at": 60.0, "alt": 32.0}]}},
 	]
 	var picked: Variant = Biome.weighted_pick(rng, table)
 	return picked.call(d) if picked is Callable else picked

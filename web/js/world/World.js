@@ -26,6 +26,7 @@ class World {
   #biomeStartDist = 0;
   #prevBiome = null;   // предыдущая локация (для плавного кроссфейда)
   #transT = 1;         // таймер перехода (1 = переход завершён)
+  #heartsThisBiome = 0; // сколько сердечек уже упало на этой локации
 
   constructor(input) {
     this.input = input;
@@ -60,6 +61,7 @@ class World {
     this.#biomeStartDist = 0;
     this.#prevBiome = null;
     this.#transT = 1;
+    this.#heartsThisBiome = 0;
     this.biome = new this.#biomeClasses[0](1337 + Math.floor(Math.random() * 1000));
     this.player.reset(60, CONFIG.GROUND_Y - Player.STAND_H);
     this.#startX = this.player.x;
@@ -179,7 +181,11 @@ class World {
       } else {
         const obstacle = ObstacleFactory.create(s.type, x0 + s.at, s);
         if (obstacle) this.addObstacle(obstacle);
-        else this.addEnemy(EnemyFactory.create(s.type, x0 + s.at, s));
+        else {
+          const enemy = EnemyFactory.create(s.type, x0 + s.at, s);
+          // наземные враги не спавнятся над ямой (летающие — можно)
+          if (enemy && (enemy.flies || this.isGroundAt(enemy.x + enemy.w / 2))) this.addEnemy(enemy);
+        }
       }
     }
     for (const it of pattern.items || []) {
@@ -222,10 +228,27 @@ class World {
   #generate() {
     const ahead = this.player.x + CONFIG.WIDTH + 120;
     while (this.#spawnCursor < ahead) {
-      const pattern = this.biome.getPattern(this.difficulty);
+      const pattern = this.#withHeartGuarantee(this.biome.getPattern(this.difficulty));
       this.#spawnPattern(pattern, this.#spawnCursor);
+      if ((pattern.items || []).some((i) => i.type === 'heart')) this.#heartsThisBiome++;
       this.#spawnCursor += pattern.length + Math.floor(this.#rng() * 36);
     }
+  }
+
+  /**
+   * Гарантия сердечек на каждой локации: как минимум одно (к ~30% пути),
+   * второе — с шансом на вторую половине. Недостающее подставляем сами.
+   */
+  #withHeartGuarantee(pattern) {
+    const p = this.biomeProgress;
+    if (this.#heartsThisBiome === 0 && p > 0.3) return this.#heartPattern();
+    if (this.#heartsThisBiome === 1 && p > 0.7 && this.#rng() < 0.5) return this.#heartPattern();
+    return pattern;
+  }
+
+  /** Паттерн с одним сердечком на уровне пояса (под прыжок-подбор). */
+  #heartPattern() {
+    return { length: 140, spawns: [], items: [{ type: 'heart', at: 60, alt: 34 }] };
   }
 
   /** Смена локации. */
@@ -240,6 +263,7 @@ class World {
 
     this.biome = new this.#biomeClasses[this.#biomeIndex](1337 + this.#loop * 31 + this.#biomeIndex * 7);
     this.#biomeStartDist = this.distance; // скорость и сложность стартуют заново
+    this.#heartsThisBiome = 0;
     // убираем «предыдущую» локацию впереди игрока
     this.#obstacles = this.#obstacles.filter((o) => o.x < this.player.x);
     this.#enemies = this.#enemies.filter((e) => e.x < this.player.x);
@@ -347,14 +371,15 @@ class World {
       }
       if (!e.damageOnTouch) return;
       if (!rectsOverlap(hb, e.hitbox)) return;
-      if (player.invulnerable || player.isDown) return;
 
-      // прыжок на врага
+      // прыжок на врага (работает и во время неуязвимости — стомп не «теряется»)
       if (e.stompable && player.vy > 0 && feet - e.y < 14) {
         e.onStomp(player);
         player.bounce();
         return;
       }
+      if (player.invulnerable || player.isDown) return;
+
       const hit = player.takeDamage(1);
       if (hit) e.onHit(player);
     };

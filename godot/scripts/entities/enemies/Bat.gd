@@ -26,6 +26,10 @@ func stompable() -> bool:
 	return false  # сверху её не возьмёшь
 
 
+func flies() -> bool:
+	return true  # летает — спокойно проходит над ямами
+
+
 func update(dt: float) -> void:
 	tick(dt)
 	x -= DRIFT * dt

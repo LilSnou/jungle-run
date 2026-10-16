@@ -341,6 +341,7 @@ class Jungle extends Biome {
       P(d > 0.45 ? 1.5 : 0, {
         length: 190, spawns: [{ type: 'pit', at: 50, w: 34 }, { type: 'snake', at: 134 }], items: [],
       }),
+      P(0.6, { length: 130, spawns: [], items: [{ type: 'heart', at: 60, alt: 32 }] }),
     ];
     const picked = Biome.weightedPick(rng, table);
     return typeof picked === 'function' ? picked(d) : picked;

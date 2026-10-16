@@ -33,6 +33,7 @@ var _biome_classes: Array = [JungleBiome, VillageBiome, TempleBiome]
 var _biome_index := 0
 var _loop := 0
 var _spawn_cursor := 0.0
+var _hearts_this_biome := 0  # сколько сердечек уже упало на этой локации
 var _next_biome_at := float(Config.TRANSITION_EVERY)
 var _rng: Callable
 var _shake := 0.0
@@ -164,6 +165,7 @@ func reset() -> void:
 	_biome_start_dist = 0
 	_trans_t = 1.0
 	_statue_clear_until = -100000.0
+	_hearts_this_biome = 0
 	_bg_cur.modulate.a = 1.0
 	_ground_cur.modulate.a = 1.0
 	_fg_cur.modulate.a = 1.0
@@ -339,7 +341,11 @@ func _spawn_pattern(pattern: Dictionary, x0: float) -> void:
 			continue
 		var enemy := Factories.create_enemy(s.type, sx, s)
 		if enemy != null:
-			add_enemy(enemy)
+			# наземные враги не спавнятся над ямой (летающие — можно)
+			if enemy.flies() or is_ground_at(sx + enemy.w * 0.5):
+				add_enemy(enemy)
+			else:
+				enemy.free()  # объект ещё не в дереве — освобождаем сразу
 			continue
 		var dec := Factories.create_decor(s.type, sx, s)
 		if dec != null and _decor_spot_free(dec, sx):
@@ -414,9 +420,29 @@ func _fix_item_placement() -> void:
 func _generate() -> void:
 	var ahead: float = player.x + Config.WIDTH + 120.0
 	while _spawn_cursor < ahead:
-		var pattern: Dictionary = biome.with_decor(biome.get_pattern(difficulty()))
+		var pattern: Dictionary = biome.with_decor(_with_heart_guarantee(biome.get_pattern(difficulty())))
 		_spawn_pattern(pattern, _spawn_cursor)
+		for it: Dictionary in pattern.get("items", []):
+			if it.type == "heart":
+				_hearts_this_biome += 1
 		_spawn_cursor += float(pattern.length) + floorf(_rng.call() * 36.0)
+
+
+## Гарантия сердечек на каждой локации: как минимум одно (к ~30% пути),
+## второе — с шансом на вторую половину. Недостающее подставляем сами.
+func _with_heart_guarantee(pattern: Dictionary) -> Dictionary:
+	var p := biome_progress()
+	if _hearts_this_biome == 0 and p > 0.3:
+		return _heart_pattern()
+	if _hearts_this_biome == 1 and p > 0.7 and _rng.call() < 0.5:
+		return _heart_pattern()
+	return pattern
+
+
+## Паттерн с одним сердечком на уровне пояса (под прыжок-подбор).
+func _heart_pattern() -> Dictionary:
+	return {"length": 140.0, "spawns": [],
+		"items": [{"type": "heart", "at": 60.0, "alt": 34.0}]}
 
 
 ## Смена локации.
@@ -438,6 +464,7 @@ func _next_biome() -> void:
 	_install_biome(biome)
 	_biome_start_dist = distance  # скорость и сложность стартуют заново
 	_statue_clear_until = -100000.0
+	_hearts_this_biome = 0
 	# убираем «предыдущую» локацию впереди игрока
 	_filter_ahead(_obstacles, _obstacles_root)
 	_filter_ahead(_enemies, _enemies_root)
@@ -619,13 +646,12 @@ func _check(e: Entity, hb: Dictionary, feet: float) -> void:
 		return
 	if not Config.rects_overlap(hb, e.hitbox()):
 		return
-	if player.invulnerable or player.is_down:
-		return
-
-	# прыжок на врага
+	# прыжок на врага (работает и во время неуязвимости — стомп не «теряется»)
 	if e.stompable() and player.vy > 0.0 and feet - e.y < 14.0:
 		(e as Enemy).on_stomp(player)
 		player.bounce()
+		return
+	if player.invulnerable or player.is_down:
 		return
 	var hit: bool = player.take_damage(1)
 	if hit:

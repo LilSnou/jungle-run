@@ -188,6 +188,13 @@ assert(game.world.speed === CONFIG.RUN_START, 'speed: в начале локац
 // 3) Живая игра: ИИ играет ~25 секунд, собирает идолы, получает урон
 // ===========================================================================
 
+// Урон (враги, шипы, падения в яму) настоящий, но смерть в этой фазе
+// ломает дальнейшие проверки: жизни зажимаем на уровне ≥1.
+// Полная смерть проверяется отдельно в фазе 6.
+const p3orig = game.world.player.takeDamage.bind(game.world.player);
+game.world.player.takeDamage = (amt = 1) =>
+  (game.world.player.lives <= 1 ? false : p3orig(amt));
+
 frames(1500, (i) => ai(i));
 assert(game.world.distance > 100, 'play: дистанция копится (' + game.world.distance + ' м)');
 assert(game.world.score > 0, 'score: очки за идолы (' + sandbox.__idols + ' шт)');
@@ -220,7 +227,6 @@ assert(game.world.player.vy < 0 || game.world.player.onGround, 'stomp: посл�
 // ===========================================================================
 
 const player = game.world.player;
-const realTakeDamage = player.takeDamage.bind(player);
 const livesBefore = player.lives;
 player.takeDamage = () => false; // неуязвимость для длинного забега
 
@@ -262,7 +268,7 @@ for (const e of game.world.entities) {
 }
 assert(insideObstacle === 0, 'items: монетки не внутри препятствий (' + insideObstacle + ')');
 
-player.takeDamage = realTakeDamage; // возвращаем смертность
+player.takeDamage = p3orig; // возвращаем смертность
 
 // ===========================================================================
 // 5) Пауза и возврат

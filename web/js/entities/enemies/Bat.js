@@ -26,6 +26,7 @@ class Bat extends Enemy {
   }
 
   get stompable() { return false; } // сверху её не возьмёшь
+  get flies() { return true; }      // летает — спокойно проходит над ямами
 
   update(dt) {
     this.tick(dt);

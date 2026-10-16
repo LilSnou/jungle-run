@@ -19,6 +19,7 @@ class Warrior extends Enemy {
 
   update(dt) {
     this.tick(dt);
+    if (this.groundFall(dt)) return;   // у края ямы — проваливается в неё
     const player = this.world.player;
     const dx = player.x - this.x;
 

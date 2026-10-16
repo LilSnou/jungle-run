@@ -42,6 +42,7 @@ class ItemFactory {
   static create(type, x, y) {
     switch (type) {
       case 'idol': return new Idol(x, y);
+      case 'heart': return new Heart(x, y);
       default: return null;
     }
   }
